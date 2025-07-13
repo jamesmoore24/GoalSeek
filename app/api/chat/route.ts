@@ -1,82 +1,493 @@
-import { streamText } from "ai"
-import { openai } from "@ai-sdk/openai"
+import { NextResponse } from "next/server";
+import { getOpenAIInstance, getDeepSeekInstance } from "@/app/lib/openai";
+import { ModelType } from "@/types/tokenUsage";
+import OpenAI from "openai";
+import { type Stream } from "openai/streaming";
+import { ModelInfo, TokenUsage } from "@/types/tokenUsage";
+import { DeepSeekCompletionUsage, DeepSeekDelta } from "@/types/openai";
+import { getCerebrasInstance } from "@/app/lib/openai";
 
-// Mock data that would come from your integrations
-const mockUserData = {
-  goals: {
-    shortTerm: [
-      { title: "Complete React Course", progress: 75, deadline: "2024-01-31" },
-      { title: "Run 5K Under 25 Minutes", progress: 60, deadline: "2024-02-15" },
-    ],
-    longTerm: [
-      { title: "Launch Personal AI Assistant", progress: 30, deadline: "2024-06-30" },
-      { title: "Achieve Financial Independence", progress: 45, deadline: "2026-12-31" },
-    ],
-  },
-  todaysTasks: [
-    { title: "Review React components", completed: false, priority: "High", time: "2:00 PM" },
-    { title: "Team standup meeting", completed: false, priority: "Medium", time: "3:30 PM" },
-    { title: "Gym workout", completed: false, priority: "High", time: "6:00 PM" },
-  ],
-  recentActivity: {
-    workoutStreak: 7,
-    tasksCompletedToday: 8,
-    totalTasksToday: 12,
-    energyLevel: 8.5,
-    currentTime: new Date().toLocaleTimeString(),
-  },
-  calendar: [
-    { title: "Deep Work Block", time: "9:00-11:00 AM", completed: true },
-    { title: "Lunch Break", time: "12:00-1:00 PM", completed: true },
-    { title: "Project Review", time: "2:00-3:00 PM", completed: false },
-  ],
-}
+export const dynamic = "force-dynamic";
 
-const systemPrompt = `You are a personal AI assistant designed to help users achieve their goals and optimize their daily performance. You have access to the user's:
+// Get the model config for the selected model
+const modelConfigs: Record<ModelType, string> = {
+  "llama-3.1-8b": "Llama 3.1 (8B)",
+  "llama-3.3-70b": "Llama 3.3 (70B)",
+  "llama-4-scout-17b-16e-instruct": "Llama 4 Scout (17B)",
+  "qwen-3-32b": "Qwen 3 (32B)",
+  "deepseek-chat": "DeepSeek Chat",
+  "deepseek-reasoner": "DeepSeek Reasoner",
+  auto: "Auto",
+};
 
-- Goals (short-term and long-term with progress tracking)
-- Today's tasks and schedule
-- Recent activity and performance metrics
-- Calendar events
-- Fitness and health data
+export async function POST(request: Request) {
+  try {
+    const { messages, model, autoRouteEnabled } = await request.json();
 
-Current user data:
-${JSON.stringify(mockUserData, null, 2)}
+    if (!Array.isArray(messages)) {
+      return NextResponse.json(
+        { error: "Messages array is required" },
+        { status: 400 }
+      );
+    }
 
-Your role is to:
-1. Provide actionable recommendations based on current progress and schedule
-2. Help prioritize tasks based on goals, deadlines, and energy levels
-3. Offer insights about productivity patterns and performance
-4. Suggest optimizations for daily routines
-5. Provide motivation and accountability
+    // Add system message for LaTeX formatting
+    const systemMessage = {
+      role: "system",
+      content:
+        "When writing mathematical expressions or equations, always use LaTeX/Markdown formatting with the following conventions:\n- For inline math, use single dollar signs: $x^2 + y^2 = z^2$\n- For block/display math, use double dollar signs:\n$$\n\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}\n$$\nThis ensures proper rendering and consistent formatting across all mathematical content.",
+    };
 
-Key capabilities:
-- Analyze day performance and suggest improvements
-- Recommend next optimal tasks based on context
-- Track goal progress and suggest adjustments
-- Provide time management and productivity insights
-- Offer personalized advice based on patterns
+    const messagesWithSystem = [systemMessage, ...messages];
 
-Always be:
-- Specific and actionable in recommendations
-- Data-driven in your analysis
-- Encouraging but realistic
-- Focused on helping achieve stated goals
-- Aware of time constraints and energy levels
+    let response: Stream<OpenAI.ChatCompletionChunk>;
+    let modelInfo: ModelInfo;
+    let isCached = false;
+    let selectedModel: ModelType = model as ModelType;
 
-Current time: ${new Date().toLocaleString()}
-`
+    // Handle auto-routing if enabled
+    if (autoRouteEnabled) {
+      try {
+        const lastMessage = messages[messages.length - 1];
+        const routerResponse = await fetch("http://localhost:8000/route", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            text: lastMessage.content,
+          }),
+        });
 
-export async function POST(req: Request) {
-  const { messages } = await req.json()
+        if (!routerResponse.ok) {
+          throw new Error("Router service failed");
+        }
 
-  const result = await streamText({
-    model: openai("gpt-4o"),
-    system: systemPrompt,
-    messages,
-    temperature: 0.7,
-    maxTokens: 1000,
-  })
+        const routerResult = await routerResponse.json();
+        const complexity = routerResult.win_rate;
 
-  return result.toDataStreamResponse()
+        // Use fixed thresholds to determine model
+        selectedModel =
+          complexity > 0.2
+            ? "deepseek-reasoner"
+            : complexity > 0.11593
+            ? "llama-3.3-70b"
+            : "llama-3.1-8b";
+
+        console.log(
+          `Auto-routing selected model: ${selectedModel} (complexity: ${complexity})`
+        );
+
+        console.log(
+          `Auto-routing selected model: ${selectedModel} (complexity: ${complexity})`
+        );
+      } catch (error) {
+        console.error("Auto-routing failed, falling back to 8B model:", error);
+        selectedModel = "llama-3.1-8b";
+
+        console.log("Auto-routing fallback to 8B model");
+      }
+    }
+
+    switch (selectedModel) {
+      case "auto":
+        // Auto should have been resolved to a specific model above
+        // If we reach here, fall back to default model
+        selectedModel = "llama-3.1-8b";
+        const cerebrasAuto = getCerebrasInstance();
+        response = (await cerebrasAuto.chat.completions.create({
+          model: "llama-3.1-8b",
+          messages: messages.map((msg) => ({
+            role: msg.role,
+            content: msg.content,
+          })),
+          temperature: 0.7,
+          stream: true,
+        })) as unknown as Stream<OpenAI.ChatCompletionChunk>;
+        const totalInputContentAuto = messages.reduce(
+          (acc, msg) => acc + msg.content,
+          ""
+        );
+        const estimatedInputTokensAuto = Math.ceil(
+          totalInputContentAuto.length / 4
+        );
+        modelInfo = {
+          name: modelConfigs[selectedModel],
+          usage: {
+            inputTokens: estimatedInputTokensAuto,
+            outputTokens: 0,
+            cached: isCached,
+          },
+        };
+        break;
+
+      case "deepseek-chat":
+        const deepseekChat = getDeepSeekInstance();
+        response = await deepseekChat.chat.completions.create({
+          model: "deepseek-chat",
+          messages: messagesWithSystem,
+          temperature: 0.7,
+          stream: true,
+        });
+        modelInfo = {
+          name: "DeepSeek Chat",
+          usage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            cached: isCached,
+          },
+        };
+        break;
+
+      case "deepseek-reasoner":
+        const deepseekReasoner = getDeepSeekInstance();
+        response = await deepseekReasoner.chat.completions.create({
+          model: "deepseek-reasoner",
+          messages: messagesWithSystem,
+          temperature: 0.7,
+          stream: true,
+        });
+        const totalInputContent = messages.reduce(
+          (acc, msg) => acc + msg.content,
+          ""
+        );
+        const estimatedInputTokens = Math.ceil(totalInputContent.length / 4);
+        modelInfo = {
+          name: "DeepSeek Reasoner",
+          usage: {
+            inputTokens: estimatedInputTokens,
+            outputTokens: 0,
+            cached: isCached,
+          },
+        };
+        break;
+
+      case "llama-3.1-8b":
+        const cerebras8b = getCerebrasInstance();
+        response = (await cerebras8b.chat.completions.create({
+          model: "llama-3.1-8b",
+          messages: messages.map((msg) => ({
+            role: msg.role,
+            content: msg.content,
+          })),
+          temperature: 0.7,
+          stream: true,
+        })) as unknown as Stream<OpenAI.ChatCompletionChunk>;
+        const totalInputContent8b = messages.reduce(
+          (acc, msg) => acc + msg.content,
+          ""
+        );
+        const estimatedInputTokens8b = Math.ceil(
+          totalInputContent8b.length / 4
+        );
+        modelInfo = {
+          name: modelConfigs[selectedModel],
+          usage: {
+            inputTokens: estimatedInputTokens8b,
+            outputTokens: 0,
+            cached: isCached,
+          },
+        };
+        break;
+
+      case "llama-3.3-70b":
+        const cerebras70b = getCerebrasInstance();
+        response = (await cerebras70b.chat.completions.create({
+          model: "llama-3.3-70b",
+          messages: messages.map((msg) => ({
+            role: msg.role,
+            content: msg.content,
+          })),
+          temperature: 0.7,
+          stream: true,
+        })) as unknown as Stream<OpenAI.ChatCompletionChunk>;
+        const totalInputContent70b = messages.reduce(
+          (acc, msg) => acc + msg.content,
+          ""
+        );
+        const estimatedInputTokens70b = Math.ceil(
+          totalInputContent70b.length / 4
+        );
+        modelInfo = {
+          name: modelConfigs[selectedModel],
+          usage: {
+            inputTokens: estimatedInputTokens70b,
+            outputTokens: 0,
+            cached: isCached,
+          },
+        };
+        break;
+
+      case "llama-4-scout-17b-16e-instruct":
+        const cerebrasScout = getCerebrasInstance();
+        response = (await cerebrasScout.chat.completions.create({
+          model: "llama-4-scout-17b-16e-instruct",
+          messages: messages.map((msg) => ({
+            role: msg.role,
+            content: msg.content,
+          })),
+          temperature: 0.7,
+          stream: true,
+        })) as unknown as Stream<OpenAI.ChatCompletionChunk>;
+        const totalInputContentScout = messages.reduce(
+          (acc, msg) => acc + msg.content,
+          ""
+        );
+        const estimatedInputTokensScout = Math.ceil(
+          totalInputContentScout.length / 4
+        );
+        modelInfo = {
+          name: modelConfigs[selectedModel],
+          usage: {
+            inputTokens: estimatedInputTokensScout,
+            outputTokens: 0,
+            cached: isCached,
+          },
+        };
+        break;
+
+      case "qwen-3-32b":
+        const cerebrasQwen = getCerebrasInstance();
+        response = (await cerebrasQwen.chat.completions.create({
+          model: "qwen-3-32b",
+          messages: messages.map((msg) => ({
+            role: msg.role,
+            content: msg.content,
+          })),
+          temperature: 0.7,
+          stream: true,
+        })) as unknown as Stream<OpenAI.ChatCompletionChunk>;
+        const totalInputContentQwen = messages.reduce(
+          (acc, msg) => acc + msg.content,
+          ""
+        );
+        const estimatedInputTokensQwen = Math.ceil(
+          totalInputContentQwen.length / 4
+        );
+        modelInfo = {
+          name: modelConfigs[selectedModel],
+          usage: {
+            inputTokens: estimatedInputTokensQwen,
+            outputTokens: 0,
+            cached: isCached,
+          },
+        };
+        break;
+
+      default:
+        return NextResponse.json(
+          { error: `Invalid model specified ${selectedModel}` },
+          { status: 400 }
+        );
+    }
+
+    // Create stream
+    const encoder = new TextEncoder();
+    const readableStream = new ReadableStream({
+      async start(controller) {
+        let outputTokens = 0;
+        let reasoningTokens = 0;
+        let reasoningContent = "";
+        const initialInputTokens = modelInfo.usage.inputTokens;
+        let qwenReasoningActive = false;
+        let qwenReasoningBuffer = "";
+        let qwenReasoningLastPos = 0;
+        let qwenContentStarted = false;
+
+        // Send the initial chunk with model information if auto-routing was used
+        if (autoRouteEnabled) {
+          controller.enqueue(
+            encoder.encode(
+              JSON.stringify({
+                selectedModel,
+                content: "",
+                modelInfo: {
+                  name: modelConfigs[selectedModel],
+                  usage: {
+                    inputTokens: initialInputTokens,
+                    outputTokens: 0,
+                    cached: false,
+                  },
+                },
+              }) + "\n"
+            )
+          );
+        }
+
+        for await (const chunk of response) {
+          const delta = chunk.choices[0]?.delta as DeepSeekDelta;
+          const text = delta.content || "";
+          const reasoning = delta.reasoning_content;
+          const usage = chunk.usage as DeepSeekCompletionUsage;
+
+          // Handle reasoning content for DeepSeek Reasoner
+          if (selectedModel === "deepseek-reasoner" && reasoning) {
+            reasoningContent += reasoning;
+            reasoningTokens += Math.ceil(reasoning.length / 4);
+            controller.enqueue(
+              encoder.encode(
+                JSON.stringify({
+                  content: "",
+                  reasoning: reasoning,
+                  modelInfo: {
+                    ...modelInfo,
+                    usage: {
+                      ...modelInfo.usage,
+                      inputTokens: initialInputTokens,
+                      outputTokens: outputTokens + reasoningTokens,
+                      reasoningTokens,
+                    },
+                  },
+                  model: modelInfo.name,
+                }) + "\n"
+              )
+            );
+            continue;
+          }
+
+          // Stream Qwen <think> reasoning live, only new delta
+          if (selectedModel === "qwen-3-32b" && text) {
+            let remaining = text;
+            while (remaining.length > 0) {
+              if (!qwenReasoningActive) {
+                // Look for <think>
+                const thinkStart = remaining.indexOf("<think>");
+                if (thinkStart !== -1) {
+                  // Stream any content before <think> as content
+                  const before = remaining.slice(0, thinkStart);
+                  if (before) {
+                    controller.enqueue(
+                      encoder.encode(
+                        JSON.stringify({
+                          content: before,
+                          reasoning: null,
+                          modelInfo,
+                          model: modelInfo.name,
+                        }) + "\n"
+                      )
+                    );
+                  }
+                  qwenReasoningActive = true;
+                  remaining = remaining.slice(thinkStart + 7); // skip <think>
+                  qwenReasoningBuffer = "";
+                  qwenReasoningLastPos = 0;
+                  continue;
+                }
+              }
+              if (qwenReasoningActive) {
+                // Look for </think>
+                const thinkEnd = remaining.indexOf("</think>");
+                if (thinkEnd !== -1) {
+                  // Stream up to </think> as reasoning (only new part)
+                  qwenReasoningBuffer += remaining.slice(0, thinkEnd);
+                  const newReasoning =
+                    qwenReasoningBuffer.slice(qwenReasoningLastPos);
+                  if (newReasoning) {
+                    controller.enqueue(
+                      encoder.encode(
+                        JSON.stringify({
+                          content: "",
+                          reasoning: newReasoning,
+                          modelInfo,
+                          model: modelInfo.name,
+                        }) + "\n"
+                      )
+                    );
+                    qwenReasoningLastPos = qwenReasoningBuffer.length;
+                  }
+                  qwenReasoningActive = false;
+                  qwenContentStarted = true;
+                  remaining = remaining.slice(thinkEnd + 8); // skip </think>
+                  qwenReasoningBuffer = "";
+                  qwenReasoningLastPos = 0;
+                  continue;
+                } else {
+                  // All is reasoning (only new part)
+                  qwenReasoningBuffer += remaining;
+                  const newReasoning =
+                    qwenReasoningBuffer.slice(qwenReasoningLastPos);
+                  if (newReasoning) {
+                    controller.enqueue(
+                      encoder.encode(
+                        JSON.stringify({
+                          content: "",
+                          reasoning: newReasoning,
+                          modelInfo,
+                          model: modelInfo.name,
+                        }) + "\n"
+                      )
+                    );
+                    qwenReasoningLastPos = qwenReasoningBuffer.length;
+                  }
+                  break;
+                }
+              }
+              // If not in <think>, stream as content
+              if (!qwenReasoningActive && remaining.length > 0) {
+                controller.enqueue(
+                  encoder.encode(
+                    JSON.stringify({
+                      content: remaining,
+                      reasoning: null,
+                      modelInfo,
+                      model: modelInfo.name,
+                    }) + "\n"
+                  )
+                );
+                break;
+              }
+            }
+            continue;
+          }
+
+          // Handle regular content
+          if (text) {
+            outputTokens += Math.ceil(text.length / 4);
+
+            if (usage) {
+              modelInfo.usage = {
+                ...modelInfo.usage,
+                inputTokens: usage.prompt_tokens || initialInputTokens,
+                outputTokens: outputTokens + reasoningTokens,
+                cached: (usage.prompt_cache_hit_tokens || 0) > 0,
+                totalTokens: usage.total_tokens || 0,
+                reasoningTokens,
+                cacheHitTokens: usage.prompt_cache_hit_tokens || 0,
+                cacheMissTokens: usage.prompt_cache_miss_tokens || 0,
+              };
+            } else {
+              modelInfo.usage = {
+                ...modelInfo.usage,
+                inputTokens: initialInputTokens,
+                outputTokens: outputTokens + reasoningTokens,
+                reasoningTokens,
+              };
+            }
+
+            controller.enqueue(
+              encoder.encode(
+                JSON.stringify({
+                  content: text,
+                  reasoning: null,
+                  modelInfo,
+                  model: modelInfo.name,
+                }) + "\n"
+              )
+            );
+          }
+        }
+        controller.close();
+      },
+    });
+
+    return new NextResponse(readableStream, {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  } catch (error) {
+    console.error("API error:", error);
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
+  }
 }

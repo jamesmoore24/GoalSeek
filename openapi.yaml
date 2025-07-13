@@ -1,0 +1,1084 @@
+openapi: 3.0.3
+info:
+  title: GoalSeek Personal Assistant API
+  description: API for personal AI assistant that helps users achieve their goals and optimize daily performance
+  version: 1.0.0
+  contact:
+    name: GoalSeek Team
+    url: https://goalseek.jmoore.info
+
+servers:
+  - url: https://goalseek.jmoore.info/api
+    description: Production server
+  - url: http://localhost:3000/api
+    description: Development server
+
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        preferences:
+          $ref: "#/components/schemas/UserPreferences"
+        integrations:
+          $ref: "#/components/schemas/UserIntegrations"
+      required:
+        - id
+        - email
+        - name
+
+    UserPreferences:
+      type: object
+      properties:
+        working_hours:
+          type: object
+          properties:
+            start:
+              type: string
+              pattern: "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"
+            end:
+              type: string
+              pattern: "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"
+        peak_energy_times:
+          type: array
+          items:
+            type: string
+        preferred_workout_times:
+          type: array
+          items:
+            type: string
+        sleep_schedule:
+          type: object
+          properties:
+            bedtime:
+              type: string
+              pattern: "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"
+            wakeup:
+              type: string
+              pattern: "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"
+
+    UserIntegrations:
+      type: object
+      properties:
+        whoop_enabled:
+          type: boolean
+          default: false
+        google_calendar_enabled:
+          type: boolean
+          default: false
+        google_tasks_enabled:
+          type: boolean
+          default: false
+        weather_enabled:
+          type: boolean
+          default: false
+        whoop_token:
+          type: string
+        google_access_token:
+          type: string
+        google_refresh_token:
+          type: string
+
+    Goal:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+        progress:
+          type: number
+          minimum: 0
+          maximum: 100
+        deadline:
+          type: string
+          format: date
+        category:
+          type: string
+          enum: [Learning, Fitness, Career, Finance, Relationships, Health]
+        priority:
+          type: string
+          enum: [High, Medium, Low]
+        type:
+          type: string
+          enum: [short-term, long-term]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - user_id
+        - title
+        - progress
+        - category
+        - priority
+        - type
+
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        goal_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+        completed:
+          type: boolean
+          default: false
+        priority:
+          type: string
+          enum: [High, Medium, Low]
+        category:
+          type: string
+        estimated_time:
+          type: number
+          description: Estimated time in minutes
+        deadline:
+          type: string
+          format: date-time
+        scheduled_time:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - user_id
+        - title
+        - completed
+        - priority
+        - category
+
+    Milestone:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        goal_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        progress:
+          type: number
+          minimum: 0
+          maximum: 100
+        completed:
+          type: boolean
+          default: false
+        deadline:
+          type: string
+          format: date
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - goal_id
+        - title
+        - progress
+        - completed
+
+    DayAnalysis:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        overall_score:
+          type: number
+          minimum: 0
+          maximum: 10
+        insights:
+          type: array
+          items:
+            type: string
+        recommendations:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - user_id
+        - date
+        - overall_score
+
+    CategoryScore:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        day_analysis_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        score:
+          type: number
+          minimum: 0
+          maximum: 10
+        trend:
+          type: string
+          enum: [up, down, stable]
+        tasks:
+          type: number
+        completed:
+          type: number
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - day_analysis_id
+        - name
+        - score
+        - trend
+        - tasks
+        - completed
+
+    TimeBlock:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        day_analysis_id:
+          type: string
+          format: uuid
+        time:
+          type: string
+        activity:
+          type: string
+        score:
+          type: number
+          minimum: 0
+          maximum: 10
+        category:
+          type: string
+        completed:
+          type: boolean
+          default: false
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - day_analysis_id
+        - time
+        - activity
+        - score
+        - category
+
+    ChatMessage:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+        metadata:
+          type: object
+          properties:
+            agent_type:
+              type: string
+            context_data:
+              type: object
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - user_id
+        - session_id
+        - role
+        - content
+
+    ChatSession:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - user_id
+        - title
+
+    WhoopData:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        recovery_score:
+          type: number
+          minimum: 0
+          maximum: 100
+        sleep_score:
+          type: number
+          minimum: 0
+          maximum: 100
+        strain_score:
+          type: number
+          minimum: 0
+          maximum: 21
+        heart_rate_variability:
+          type: number
+        resting_heart_rate:
+          type: number
+        sleep_duration:
+          type: number
+          description: Sleep duration in minutes
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - user_id
+        - date
+        - recovery_score
+        - sleep_score
+        - strain_score
+
+    WeatherData:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        temperature:
+          type: number
+        humidity:
+          type: number
+        conditions:
+          type: string
+        location:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - user_id
+        - date
+        - temperature
+        - conditions
+
+    Document:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        content:
+          type: string
+        category:
+          type: string
+          enum: [finance, insurance, health, legal, education, other]
+        metadata:
+          type: object
+          properties:
+            file_type:
+              type: string
+            file_size:
+              type: number
+            tags:
+              type: array
+              items:
+                type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - user_id
+        - title
+        - content
+        - category
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+paths:
+  /users:
+    get:
+      summary: Get current user profile
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: User profile retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Unauthorized
+        "404":
+          description: User not found
+
+    put:
+      summary: Update user profile
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/User"
+      responses:
+        "200":
+          description: User profile updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          description: Invalid request data
+        "401":
+          description: Unauthorized
+
+  /goals:
+    get:
+      summary: Get user goals
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [short-term, long-term]
+          description: Filter by goal type
+        - name: category
+          in: query
+          schema:
+            type: string
+          description: Filter by category
+      responses:
+        "200":
+          description: Goals retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Goal"
+
+    post:
+      summary: Create a new goal
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Goal"
+      responses:
+        "201":
+          description: Goal created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Goal"
+
+  /goals/{goalId}:
+    get:
+      summary: Get a specific goal
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: goalId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Goal retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Goal"
+
+    put:
+      summary: Update a goal
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: goalId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Goal"
+      responses:
+        "200":
+          description: Goal updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Goal"
+
+    delete:
+      summary: Delete a goal
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: goalId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Goal deleted successfully
+
+  /tasks:
+    get:
+      summary: Get user tasks
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: completed
+          in: query
+          schema:
+            type: boolean
+          description: Filter by completion status
+        - name: priority
+          in: query
+          schema:
+            type: string
+            enum: [High, Medium, Low]
+          description: Filter by priority
+        - name: category
+          in: query
+          schema:
+            type: string
+          description: Filter by category
+        - name: date
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Filter by date
+      responses:
+        "200":
+          description: Tasks retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Task"
+
+    post:
+      summary: Create a new task
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Task"
+      responses:
+        "201":
+          description: Task created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+
+  /tasks/{taskId}:
+    get:
+      summary: Get a specific task
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Task retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+
+    put:
+      summary: Update a task
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Task"
+      responses:
+        "200":
+          description: Task updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+
+    delete:
+      summary: Delete a task
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Task deleted successfully
+
+  /day-analysis:
+    get:
+      summary: Get day analysis
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: date
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Analysis date
+      responses:
+        "200":
+          description: Day analysis retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DayAnalysis"
+
+    post:
+      summary: Create day analysis
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DayAnalysis"
+      responses:
+        "201":
+          description: Day analysis created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DayAnalysis"
+
+  /chat/sessions:
+    get:
+      summary: Get chat sessions
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Chat sessions retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ChatSession"
+
+    post:
+      summary: Create a new chat session
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+      responses:
+        "201":
+          description: Chat session created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatSession"
+
+  /chat/sessions/{sessionId}/messages:
+    get:
+      summary: Get chat messages for a session
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Chat messages retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ChatMessage"
+
+    post:
+      summary: Send a message in a chat session
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+                metadata:
+                  type: object
+      responses:
+        "201":
+          description: Message sent successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatMessage"
+
+  /whoop/data:
+    get:
+      summary: Get Whoop data
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Start date for data range
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date
+          description: End date for data range
+      responses:
+        "200":
+          description: Whoop data retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WhoopData"
+
+  /weather/data:
+    get:
+      summary: Get weather data
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: date
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Weather data date
+      responses:
+        "200":
+          description: Weather data retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WeatherData"
+
+  /documents:
+    get:
+      summary: Get user documents
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+          description: Filter by document category
+      responses:
+        "200":
+          description: Documents retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Document"
+
+    post:
+      summary: Upload a document
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                content:
+                  type: string
+                category:
+                  type: string
+                  enum: [finance, insurance, health, legal, education, other]
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Document uploaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+
+  /ai/chat:
+    post:
+      summary: Send message to AI assistant
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                messages:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role:
+                        type: string
+                        enum: [user, assistant]
+                      content:
+                        type: string
+                session_id:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: AI response generated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  metadata:
+                    type: object
+
+  /ai/analyze-day:
+    post:
+      summary: Analyze user's day
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                date:
+                  type: string
+                  format: date
+      responses:
+        "200":
+          description: Day analysis generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DayAnalysis"
+
+  /ai/suggest-next-task:
+    post:
+      summary: Get AI suggestions for next task
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                context:
+                  type: string
+                  description: Additional context for the suggestion
+      responses:
+        "200":
+          description: Task suggestions generated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        title:
+                          type: string
+                        description:
+                          type: string
+                        priority:
+                          type: string
+                          enum: [High, Medium, Low]
+                        estimated_time:
+                          type: number
+                        category:
+                          type: string
+                        reward_points:
+                          type: number
