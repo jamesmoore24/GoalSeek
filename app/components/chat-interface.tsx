@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { ChatHistory, Message, ChatNode } from "@/types/chat";
 import { ModelType, TokenUsage } from "@/types/tokenUsage";
 import { Textarea } from "@/components/ui/textarea";
+import { ChatMessage } from "./chat-message";
 // import {
 //   Select,
 //   SelectContent,
@@ -292,6 +293,7 @@ export default function ChatInterface() {
           id: `${nodeId}-assistant`,
           role: "assistant",
           content: node.response,
+          model: node.model,
         },
       ];
     }
@@ -356,36 +358,44 @@ export default function ChatInterface() {
         }}
       >
         <div className="space-y-4 max-w-4xl mx-auto">
-          {messages.map((message) => (
-            <div
-              key={message.id}
-              className={`flex items-start space-x-3 ${
-                message.role === "user" ? "justify-end" : "justify-start"
-              }`}
-            >
-              {message.role === "assistant" && (
-                <div className="flex-shrink-0 w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-                  <Bot className="h-4 w-4 text-blue-600" />
-                </div>
-              )}
+          {messages.map((message) => {
+            // Parse reasoning from the response if present
+            const parseResponse = (response: string) => {
+              const reasoningMatch = response.match(
+                /Reasoning:\s*([\s\S]*?)\s*Response:\s*([\s\S]*)/
+              );
+              if (reasoningMatch) {
+                return {
+                  reasoning: reasoningMatch[1].trim(),
+                  content: reasoningMatch[2].trim(),
+                };
+              }
+              return {
+                reasoning: undefined,
+                content: response.trim(),
+              };
+            };
 
-              <div
-                className={`max-w-[80%] rounded-lg px-4 py-2 ${
-                  message.role === "user"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-100 text-gray-900"
-                }`}
-              >
-                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-              </div>
+            const { reasoning, content } =
+              message.role === "assistant"
+                ? parseResponse(message.content)
+                : { reasoning: undefined, content: message.content };
 
-              {message.role === "user" && (
-                <div className="flex-shrink-0 w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center">
-                  <User className="h-4 w-4 text-gray-600" />
-                </div>
-              )}
-            </div>
-          ))}
+            return (
+              <ChatMessage
+                key={message.id}
+                message={{
+                  content,
+                  isUser: message.role === "user",
+                  reasoning,
+                  model: "model" in message ? message.model : undefined,
+                }}
+                isSelected={false}
+                isRecent={true}
+                inInsertMode={true}
+              />
+            );
+          })}
 
           {isLoading && messageContext.length > 0 && (
             <div className="flex items-start space-x-3">
