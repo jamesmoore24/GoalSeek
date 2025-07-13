@@ -17,11 +17,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { MessageContent, TextContent, ImageContent } from "@/types/chat";
 import "katex/dist/katex.min.css";
 
 interface ChatMessageProps {
   message: {
-    content: string;
+    content: MessageContent;
     isUser: boolean;
     reasoning?: string;
     model?: string;
@@ -29,6 +30,7 @@ interface ChatMessageProps {
   isSelected?: boolean;
   isRecent?: boolean;
   inInsertMode?: boolean;
+  isLoading?: boolean;
 }
 
 const MarkdownComponents: Record<string, ComponentType<any>> = {
@@ -235,6 +237,7 @@ export function ChatMessage({
   isSelected = false,
   isRecent = false,
   inInsertMode = false,
+  isLoading = false,
 }: ChatMessageProps) {
   const [showReasoning, setShowReasoning] = useState(false);
   const [isExpanded, setIsExpanded] = useState(true);
@@ -251,6 +254,46 @@ export function ChatMessage({
   const getPreviewContent = (content: string) => {
     if (content.length <= 50) return content;
     return content.slice(0, 50) + "...";
+  };
+
+  const getTextContent = (content: MessageContent): string => {
+    if (typeof content === "string") {
+      return content;
+    }
+
+    return content
+      .filter((item): item is TextContent => item.type === "text")
+      .map((item) => item.text)
+      .join(" ");
+  };
+
+  const getImageContent = (content: MessageContent): ImageContent[] => {
+    if (typeof content === "string") {
+      return [];
+    }
+
+    return content.filter(
+      (item): item is ImageContent => item.type === "image_url"
+    );
+  };
+
+  const renderImages = (images: ImageContent[]) => {
+    if (images.length === 0) return null;
+
+    return (
+      <div className="space-y-2 mb-3">
+        {images.map((image, index) => (
+          <div key={index} className="max-w-sm">
+            <img
+              src={image.image_url.url}
+              alt={`Upload ${index + 1}`}
+              className="rounded-lg border max-w-full h-auto"
+              style={{ maxHeight: "200px" }}
+            />
+          </div>
+        ))}
+      </div>
+    );
   };
 
   return (
@@ -307,13 +350,30 @@ export function ChatMessage({
             message.reasoning ? "border-t pt-3 border-gray-200" : ""
           )}
         >
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm, remarkMath]}
-            rehypePlugins={[rehypeKatex]}
-            components={MarkdownComponents}
-          >
-            {isExpanded ? message.content : getPreviewContent(message.content)}
-          </ReactMarkdown>
+          {renderImages(getImageContent(message.content))}
+          {isLoading && !getTextContent(message.content) ? (
+            <div className="flex space-x-1">
+              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+              <div
+                className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
+                style={{ animationDelay: "0.1s" }}
+              ></div>
+              <div
+                className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
+                style={{ animationDelay: "0.2s" }}
+              ></div>
+            </div>
+          ) : (
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm, remarkMath]}
+              rehypePlugins={[rehypeKatex]}
+              components={MarkdownComponents}
+            >
+              {isExpanded
+                ? getTextContent(message.content)
+                : getPreviewContent(getTextContent(message.content))}
+            </ReactMarkdown>
+          )}
         </div>
       </div>
     </div>

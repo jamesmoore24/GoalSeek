@@ -17,6 +17,7 @@ const modelConfigs: Record<ModelType, string> = {
   "qwen-3-32b": "Qwen 3 (32B)",
   "deepseek-chat": "DeepSeek Chat",
   "deepseek-reasoner": "DeepSeek Reasoner",
+  "gpt-4o": "GPT-4o (Multimodal)",
   auto: "Auto",
 };
 
@@ -268,6 +269,41 @@ export async function POST(request: Request) {
           name: modelConfigs[selectedModel],
           usage: {
             inputTokens: estimatedInputTokensQwen,
+            outputTokens: 0,
+            cached: isCached,
+          },
+        };
+        break;
+
+      case "gpt-4o":
+        const openai = getOpenAIInstance();
+        // Format messages for GPT-4o (supports multimodal)
+        const formattedMessages = messagesWithSystem.map((msg) => ({
+          role: msg.role,
+          content: msg.content, // GPT-4o can handle both string and structured content
+        }));
+
+        response = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: formattedMessages,
+          temperature: 0.7,
+          stream: true,
+        });
+        const totalInputContentGpt4o = messages.reduce(
+          (acc, msg) =>
+            acc +
+            (typeof msg.content === "string"
+              ? msg.content
+              : JSON.stringify(msg.content)),
+          ""
+        );
+        const estimatedInputTokensGpt4o = Math.ceil(
+          totalInputContentGpt4o.length / 4
+        );
+        modelInfo = {
+          name: modelConfigs[selectedModel],
+          usage: {
+            inputTokens: estimatedInputTokensGpt4o,
             outputTokens: 0,
             cached: isCached,
           },

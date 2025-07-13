@@ -1,5 +1,20 @@
+export interface ImageContent {
+  type: "image_url";
+  image_url: {
+    url: string;
+    detail?: "low" | "high" | "auto";
+  };
+}
+
+export interface TextContent {
+  type: "text";
+  text: string;
+}
+
+export type MessageContent = string | (TextContent | ImageContent)[];
+
 export interface Message {
-  content: string;
+  content: MessageContent;
   isUser: boolean;
 }
 
@@ -7,7 +22,7 @@ export interface ChatNode {
   id: string;
   parentId: string | null;
   children: string[];
-  query: string;
+  query: MessageContent;
   response: string;
   model: string;
 }

@@ -5,6 +5,7 @@ export type ModelType =
   | "qwen-3-32b"
   | "deepseek-chat"
   | "deepseek-reasoner"
+  | "gpt-4o"
   | "auto";
 
 export interface TokenUsage {
