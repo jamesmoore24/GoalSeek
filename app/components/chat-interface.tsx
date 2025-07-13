@@ -91,6 +91,12 @@ export default function ChatInterface() {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
+
+    // Auto-resize textarea
+    const textarea = e.target;
+    textarea.style.height = "auto";
+    const newHeight = Math.min(Math.max(textarea.scrollHeight, 12), 96); // Min 1 line (~24px), Max 4 lines (~96px)
+    textarea.style.height = `${newHeight}px`;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -189,7 +195,7 @@ export default function ChatInterface() {
             const update = JSON.parse(line);
 
             // Handle model update from auto router
-            if (update.selectedModel && false) {
+            if (update.selectedModel) {
               // Update the node's model name with the actual selected model
               setChatNodes((prev) => {
                 const updated = new Map(prev);
@@ -197,9 +203,7 @@ export default function ChatInterface() {
                 if (nodeToUpdate) {
                   updated.set(newChatNodeID, {
                     ...nodeToUpdate,
-                    model: `Auto Router (${
-                      modelConfigs[update.selectedModel as ModelType].name
-                    })`,
+                    model: modelConfigs[update.selectedModel as ModelType].name,
                   });
                 }
                 return updated;
@@ -273,16 +277,44 @@ export default function ChatInterface() {
   const messages = messageContext.flatMap((nodeId) => {
     const node = chatNodes.get(nodeId);
     if (!node) return [];
-    return [
-      { id: `${nodeId}-user`, role: "user", content: node.query },
-      { id: `${nodeId}-assistant`, role: "assistant", content: node.response },
-    ];
+
+    const userMessage = {
+      id: `${nodeId}-user`,
+      role: "user",
+      content: node.query,
+    };
+
+    // Only include assistant message if it has content
+    if (node.response.trim()) {
+      return [
+        userMessage,
+        {
+          id: `${nodeId}-assistant`,
+          role: "assistant",
+          content: node.response,
+        },
+      ];
+    }
+
+    return [userMessage];
   });
 
   return (
-    <div className="h-screen flex flex-col">
-      {/* Model Selection */}
-      <div className="flex items-center space-x-3 p-4 bg-white border-b border-gray-200">
+    <div
+      className="relative"
+      style={{
+        height: "100dvh", // Dynamic viewport height for mobile
+        maxHeight: "100dvh",
+        overflow: "hidden",
+      }}
+    >
+      {/* Model Selection - Fixed at top */}
+      <div
+        className="absolute top-0 left-0 right-0 z-20 flex items-center space-x-3 p-4 bg-white border-b border-gray-200"
+        style={{
+          paddingTop: "calc(1rem + env(safe-area-inset-top))",
+        }}
+      >
         <div className="flex items-center space-x-2">
           <Bot className="h-4 w-4 text-blue-600" />
           <span className="text-sm font-medium text-gray-700">Model:</span>
@@ -312,8 +344,17 @@ export default function ChatInterface() {
         </select>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4">
+      {/* Messages - Scrollable area between fixed top and bottom */}
+      <div
+        className="absolute left-0 right-0 overflow-y-auto"
+        style={{
+          top: "calc(65px + env(safe-area-inset-top))", // Model selector height + safe area
+          bottom: "calc(100px + env(safe-area-inset-bottom))", // Input area height + safe area
+          padding: "16px",
+          WebkitOverflowScrolling: "touch",
+          overflowAnchor: "none",
+        }}
+      >
         <div className="space-y-4 max-w-4xl mx-auto">
           {messages.map((message) => (
             <div
@@ -373,8 +414,14 @@ export default function ChatInterface() {
         </div>
       </div>
 
-      {/* Input */}
-      <div className="p-4 bg-white border-t border-gray-200">
+      {/* Input - Fixed at bottom */}
+      <div
+        className="absolute bottom-0 left-0 right-0 z-20 p-4 bg-white border-t border-gray-200"
+        style={{
+          paddingBottom: "calc(1rem + env(safe-area-inset-bottom))",
+          backgroundColor: "white",
+        }}
+      >
         <form
           onSubmit={handleSubmit}
           className="flex space-x-2 max-w-4xl mx-auto"
@@ -384,13 +431,26 @@ export default function ChatInterface() {
             value={input}
             onChange={handleInputChange}
             placeholder="Ask me anything about your goals, schedule, or what to do next..."
-            className="flex-1 min-h-[40px] max-h-[120px] resize-none"
+            className="flex-1 min-h-[12px] max-h-[96px] resize-none overflow-y-auto"
             disabled={isLoading}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 handleSubmit(e);
               }
+            }}
+            autoFocus={false}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            style={{
+              WebkitAppearance: "none",
+              WebkitBorderRadius: "0.375rem",
+              WebkitUserSelect: "text",
+              WebkitTouchCallout: "none",
+              WebkitTapHighlightColor: "transparent",
+              fontSize: "16px", // Prevents zoom on iOS Safari
             }}
           />
           <Button type="submit" disabled={isLoading || !input.trim()}>
