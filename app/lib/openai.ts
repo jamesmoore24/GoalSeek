@@ -1,10 +1,11 @@
 import { OpenAI } from "openai";
 import Cerebras from "@cerebras/cerebras_cloud_sdk";
 
-// Singleton instance
+// Singleton instances
 let openaiInstance: OpenAI | undefined;
 let deepSeekInstance: OpenAI | undefined;
 let cerebrasInstance: Cerebras | undefined;
+let openRouterInstance: OpenAI | undefined;
 
 export function getOpenAIInstance(): OpenAI {
   if (!openaiInstance) {
@@ -33,3 +34,20 @@ export function getCerebrasInstance(): Cerebras {
   }
   return cerebrasInstance;
 }
+
+export function getOpenRouterInstance(): OpenAI {
+  if (!openRouterInstance) {
+    openRouterInstance = new OpenAI({
+      baseURL: "https://openrouter.ai/api/v1",
+      apiKey: process.env.OPENROUTER_API_KEY,
+      defaultHeaders: {
+        "HTTP-Referer": "https://goalseek.app",
+        "X-Title": "GoalSeek",
+      },
+    });
+  }
+  return openRouterInstance;
+}
+
+// Default model for plan generation via OpenRouter
+export const PLAN_MODEL = "google/gemini-2.5-flash";

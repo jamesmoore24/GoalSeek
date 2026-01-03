@@ -1,24 +1,37 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient as createSupabaseClient, SupabaseClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-// Validate environment variables
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.error("❌ Missing Supabase environment variables:");
-  console.error(
-    "   NEXT_PUBLIC_SUPABASE_URL:",
-    supabaseUrl ? "Set" : "Missing"
-  );
-  console.error(
-    "   NEXT_PUBLIC_SUPABASE_ANON_KEY:",
-    supabaseAnonKey ? "Set" : "Missing"
-  );
-  throw new Error("Missing Supabase environment variables");
+// Singleton instance
+let supabaseInstance: SupabaseClient | null = null;
+
+// Create or return singleton Supabase client
+export function createClient(): SupabaseClient {
+  if (supabaseInstance) {
+    return supabaseInstance;
+  }
+
+  // Validate environment variables
+  if (!supabaseUrl || !supabaseAnonKey) {
+    console.error("❌ Missing Supabase environment variables:");
+    console.error(
+      "   NEXT_PUBLIC_SUPABASE_URL:",
+      supabaseUrl ? "Set" : "Missing"
+    );
+    console.error(
+      "   NEXT_PUBLIC_SUPABASE_ANON_KEY:",
+      supabaseAnonKey ? "Set" : "Missing"
+    );
+    throw new Error("Missing Supabase environment variables");
+  }
+
+  supabaseInstance = createSupabaseClient(supabaseUrl, supabaseAnonKey);
+  return supabaseInstance;
 }
 
-console.log("🔗 Initializing Supabase client with URL:", supabaseUrl);
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Legacy export for backwards compatibility
+export const supabase = createClient();
 
 // Database types based on our schema
 export interface Database {
