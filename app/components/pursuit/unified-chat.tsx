@@ -479,7 +479,9 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
                   "max-w-[85%] rounded-lg p-3 shadow-sm",
                   message.role === 'user'
                     ? 'bg-primary text-primary-foreground'
-                    : 'bg-card border'
+                    : 'bg-card border',
+                  // Make the bubble wider when showing pipeline status
+                  message.role === 'assistant' && isLoading && idx === messages.length - 1 && !message.content && 'min-w-[220px]'
                 )}
               >
                 {/* Image carousel */}
@@ -487,14 +489,24 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
                   <MessageImageCarousel images={message.images} />
                 )}
 
-                <div className={cn(
-                    "text-sm prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2",
-                    message.role === 'user'
-                      ? "[&_*]:text-inherit"
-                      : "dark:prose-invert"
-                  )}>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-                </div>
+                {/* Show pipeline status for loading assistant messages */}
+                {message.role === 'assistant' && isLoading && idx === messages.length - 1 && (
+                  <div className={cn(message.content && "mb-3 pb-3 border-b border-border/50")}>
+                    <PipelineStatusDisplay status={pipelineStatus} />
+                  </div>
+                )}
+
+                {/* Message content */}
+                {message.content && (
+                  <div className={cn(
+                      "text-sm prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2",
+                      message.role === 'user'
+                        ? "[&_*]:text-inherit"
+                        : "dark:prose-invert"
+                    )}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                  </div>
+                )}
 
                 {message.functionCalls && message.functionCalls.length > 0 && (
                   <div className="mt-2 pt-2 border-t border-border/50 space-y-1">
@@ -520,16 +532,6 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
           ))
         )}
 
-        {isLoading && (
-          <div className="flex gap-3 items-start">
-            <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center shrink-0">
-              <Bot className="h-5 w-5 text-primary-foreground" />
-            </div>
-            <div className="bg-card border rounded-lg p-3 shadow-sm min-w-[200px]">
-              <PipelineStatusDisplay status={pipelineStatus} />
-            </div>
-          </div>
-        )}
 
         <div ref={messagesEndRef} />
       </div>
