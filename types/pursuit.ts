@@ -194,7 +194,8 @@ export type PursuitFunction =
   | 'reorder_subgoals'
   | 'create_executable'
   | 'update_executable'
-  | 'delete_executable';
+  | 'delete_executable'
+  | 'create_calendar_event';
 
 export interface FunctionCall {
   name: PursuitFunction;

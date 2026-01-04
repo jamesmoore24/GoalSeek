@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase";
 import type { PursuitFunction } from "@/types/pursuit";
+import { createCalendarEvent } from "@/lib/google-calendar";
 
 /**
  * Execute LLM function calls for pursuit management
@@ -213,6 +214,34 @@ export async function executePursuitFunction(
         };
       }
 
+      case "create_calendar_event": {
+        const { title, start_time, end_time, description, location } = args;
+
+        const event = await createCalendarEvent(userId, {
+          title,
+          startTime: new Date(start_time),
+          endTime: new Date(end_time),
+          description,
+          location,
+        });
+
+        if (!event) {
+          throw new Error("Failed to create calendar event");
+        }
+
+        return {
+          success: true,
+          event: {
+            id: event.id,
+            title: event.title,
+            start: event.start.toISOString(),
+            end: event.end.toISOString(),
+            link: event.htmlLink,
+          },
+          message: `Created calendar event: "${event.title}" on ${event.start.toLocaleDateString()}`
+        };
+      }
+
       default:
         throw new Error(`Unknown function: ${functionName}`);
     }
@@ -368,6 +397,24 @@ export function getPursuitFunctionDefinitions() {
             },
           },
           required: ["pursuit_id", "subgoal_order"],
+        },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
+        name: "create_calendar_event",
+        description: "Create a new event on the user's Google Calendar. Use this to schedule time blocks for pursuits, meetings, or reminders. Always confirm with the user before creating events.",
+        parameters: {
+          type: "object",
+          properties: {
+            title: { type: "string", description: "Title of the calendar event" },
+            start_time: { type: "string", format: "date-time", description: "Start time in ISO 8601 format (e.g., 2024-01-15T09:00:00)" },
+            end_time: { type: "string", format: "date-time", description: "End time in ISO 8601 format (e.g., 2024-01-15T10:00:00)" },
+            description: { type: "string", description: "Optional description or notes for the event" },
+            location: { type: "string", description: "Optional location for the event" },
+          },
+          required: ["title", "start_time", "end_time"],
         },
       },
     },

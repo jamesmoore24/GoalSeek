@@ -2,12 +2,25 @@ import { NextResponse } from "next/server";
 import { getOpenRouterInstance, PLAN_MODEL } from "@/app/lib/openai";
 import { executePursuitFunction, getPursuitFunctionDefinitions } from "@/lib/pursuit/functions";
 import { createClient } from "@/lib/supabase";
+import { createClient as createServerClient } from "@/lib/supabase/server";
 import { embedText, formatEmbeddingForPgvector } from "@/lib/embeddings";
-
-// Mock user ID (replace with actual auth when implemented)
-const MOCK_USER_ID = "00000000-0000-0000-0000-000000000000";
-
-export const runtime = 'edge';
+import {
+  getGoogleCalendarEvents,
+  getFreeBusyTime,
+  formatCalendarForLLM,
+  formatBusySlots,
+  type GoogleCalendarEvent,
+} from "@/lib/google-calendar";
+import {
+  getStravaActivities,
+  formatStravaForLLM,
+  type StravaActivity,
+} from "@/lib/strava";
+import {
+  getGarminWellnessSummary,
+  formatGarminForLLM,
+  isGarminConfigured,
+} from "@/lib/garmin";
 
 /**
  * POST /api/chat/unified - Unified chat with full pursuit context
@@ -18,6 +31,19 @@ export const runtime = 'edge';
  */
 export async function POST(request: Request) {
   try {
+    // Get authenticated user
+    const supabase = await createServerClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    const userId = user.id;
+
     const { selected_pursuit_id, messages, include_all_pursuits = true } = await request.json();
 
     if (!Array.isArray(messages)) {
@@ -35,7 +61,7 @@ export async function POST(request: Request) {
 
     // Build comprehensive context with semantic memory retrieval
     const context = await buildUnifiedChatContext(
-      MOCK_USER_ID,
+      userId,
       selected_pursuit_id,
       include_all_pursuits,
       latestUserMessage
@@ -124,7 +150,7 @@ export async function POST(request: Request) {
                   try {
                     const args = JSON.parse(call.function.arguments);
                     const result = await executePursuitFunction(
-                      MOCK_USER_ID,
+                      userId,
                       call.function.name,
                       args
                     );
@@ -306,12 +332,84 @@ async function buildUnifiedChatContext(
     }
   }
 
+  // Fetch calendar events for the next 7 days if calendar is connected
+  let calendarEvents: GoogleCalendarEvent[] = [];
+  let busySlots: Array<{ start: Date; end: Date }> = [];
+  let calendarSettings: { shareTitles: boolean; shareDescriptions: boolean } | null = null;
+
+  try {
+    const now = new Date();
+    const endDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+    // Check if user has calendar connected and get their settings
+    const { data: integration } = await supabase
+      .from('user_integrations')
+      .select('google_calendar_connected, calendar_sync_enabled, share_event_titles, share_event_descriptions')
+      .eq('user_id', userId)
+      .single();
+
+    if (integration?.google_calendar_connected && integration?.calendar_sync_enabled) {
+      calendarSettings = {
+        shareTitles: integration.share_event_titles ?? true,
+        shareDescriptions: integration.share_event_descriptions ?? false,
+      };
+
+      const [events, busy] = await Promise.all([
+        getGoogleCalendarEvents(userId, { startDate: now, endDate }),
+        getFreeBusyTime(userId, now, endDate),
+      ]);
+
+      calendarEvents = events;
+      busySlots = busy;
+
+      console.log(`[Calendar] Fetched ${calendarEvents.length} events and ${busySlots.length} busy slots`);
+    }
+  } catch (error) {
+    console.error('[Calendar] Failed to fetch calendar data:', error);
+  }
+
+  // Fetch fitness data (Strava activities)
+  let stravaActivities: StravaActivity[] = [];
+  try {
+    // Check if user has Strava connected (use maybeSingle to handle no row case)
+    const { data: integration, error: intError } = await supabase
+      .from('user_integrations')
+      .select('strava_connected')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    console.log(`[Fitness] Strava check for user ${userId}: connected=${integration?.strava_connected ?? 'no row'}, error=${intError?.message || 'none'}`);
+
+    if (integration?.strava_connected) {
+      stravaActivities = await getStravaActivities(userId, 7);
+      console.log(`[Fitness] Fetched ${stravaActivities.length} Strava activities`);
+    }
+  } catch (error) {
+    console.error('[Fitness] Failed to fetch Strava data:', error);
+  }
+
+  // Fetch Garmin wellness data (if configured via env vars)
+  let garminData: Awaited<ReturnType<typeof getGarminWellnessSummary>> = null;
+  try {
+    if (isGarminConfigured()) {
+      garminData = await getGarminWellnessSummary();
+      console.log(`[Fitness] Fetched Garmin wellness data`);
+    }
+  } catch (error) {
+    console.error('[Fitness] Failed to fetch Garmin data:', error);
+  }
+
   return {
     all_pursuits: pursuits,
     progress_map: progressMap,
     selected_pursuit: selectedPursuit,
     selected_pursuit_subgoals: subgoals,
     memories,
+    calendar_events: calendarEvents,
+    busy_slots: busySlots,
+    calendar_settings: calendarSettings,
+    strava_activities: stravaActivities,
+    garmin_data: garminData,
   };
 }
 
@@ -331,7 +429,7 @@ function formatUnifiedChatMessages(context: any, messages: any[]): any[] {
  * Build system prompt for unified chat with full context
  */
 function buildUnifiedSystemPrompt(context: any): string {
-  const { all_pursuits, progress_map, selected_pursuit, selected_pursuit_subgoals, memories } = context;
+  const { all_pursuits, progress_map, selected_pursuit, selected_pursuit_subgoals, memories, calendar_events, busy_slots, calendar_settings, strava_activities, garmin_data } = context;
 
   // Build pursuit status overview
   const pursuitOverview = all_pursuits.map((pursuit: any) => {
@@ -377,6 +475,45 @@ ${memories.map((m: any) => {
 }).join('\n')}`
     : '';
 
+  // Build calendar section if calendar is connected
+  const calendarSection = calendar_settings && calendar_events
+    ? `\n\n## Your Calendar (Next 7 Days)
+
+${formatCalendarForLLM(calendar_events, calendar_settings)}
+
+### Busy Slots
+${formatBusySlots(busy_slots)}
+
+Use this calendar context to:
+- Avoid scheduling during existing events
+- Suggest optimal times for pursuit work sessions
+- Identify open blocks for focused work
+- Consider meeting preparation and transition time`
+    : '';
+
+  // Build fitness section if Strava or Garmin is connected
+  const hasStravaData = strava_activities && strava_activities.length > 0;
+  const hasGarminData = garmin_data && (garmin_data.sleep || garmin_data.daily || garmin_data.heartRate);
+
+  let fitnessSection = '';
+  if (hasStravaData || hasGarminData) {
+    fitnessSection = '\n\n## Fitness & Wellness Data';
+
+    if (hasGarminData) {
+      fitnessSection += `\n\n### Today's Wellness (Garmin)\n${formatGarminForLLM(garmin_data)}`;
+    }
+
+    if (hasStravaData) {
+      fitnessSection += `\n\n### Recent Activities (Strava - Last 7 Days)\n${formatStravaForLLM(strava_activities)}`;
+    }
+
+    fitnessSection += `\n\nUse this fitness context to:
+- Consider recovery needs based on sleep quality and Body Battery
+- Suggest lighter cognitive work if sleep was poor or Body Battery is low
+- Factor in recent training load when planning intense activities
+- Celebrate fitness consistency or suggest getting moving if inactive`;
+  }
+
   return `You are an AI assistant helping the user manage their pursuits (goals) with full context awareness.
 
 ## All Active Pursuits - Weekly Progress
@@ -384,6 +521,8 @@ ${memories.map((m: any) => {
 ${pursuitOverview}
 ${focusedSection}
 ${memoriesSection}
+${calendarSection}
+${fitnessSection}
 
 ## Your Capabilities
 

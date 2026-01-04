@@ -104,4 +104,4 @@ pids
 
 # Temporary files
 *.tmp
-*.temp
+*.temp.garmin-tokens
