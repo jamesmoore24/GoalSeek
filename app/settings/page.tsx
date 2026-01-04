@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Separator } from '@/components/ui/separator'
-import { Calendar, Check, Loader2, ArrowLeft, Activity, Watch } from 'lucide-react'
+import { Calendar, Check, Loader2, ArrowLeft, Watch } from 'lucide-react'
 import { toast } from 'sonner'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
@@ -34,7 +34,6 @@ interface CalendarStatus {
 }
 
 interface FitnessStatus {
-  strava_connected: boolean
   garmin_connected: boolean
 }
 
@@ -47,10 +46,8 @@ function SettingsContent() {
   const [calendarsLoading, setCalendarsLoading] = useState(false)
   const [disconnecting, setDisconnecting] = useState(false)
   const [fitnessStatus, setFitnessStatus] = useState<FitnessStatus>({
-    strava_connected: false,
     garmin_connected: false,
   })
-  const [stravaDisconnecting, setStravaDisconnecting] = useState(false)
 
   // Handle URL params for success/error messages
   useEffect(() => {
@@ -60,16 +57,10 @@ function SettingsContent() {
     if (success === 'calendar_connected') {
       toast.success('Google Calendar connected successfully!')
       window.history.replaceState({}, '', '/settings')
-    } else if (success === 'strava_connected') {
-      toast.success('Strava connected successfully!')
-      setFitnessStatus(prev => ({ ...prev, strava_connected: true }))
-      window.history.replaceState({}, '', '/settings')
     } else if (error) {
       const errorMessages: Record<string, string> = {
         calendar_auth_denied: 'Calendar access was denied',
         calendar_auth_failed: 'Calendar authentication failed',
-        strava_auth_denied: 'Strava access was denied',
-        strava_auth_failed: 'Strava authentication failed',
         invalid_state: 'Invalid authentication state',
         auth_timeout: 'Authentication timed out',
         user_mismatch: 'User verification failed',
@@ -203,27 +194,6 @@ function SettingsContent() {
       }
     } catch {
       toast.error('Failed to save selection')
-    }
-  }
-
-  const handleStravaConnect = () => {
-    window.location.href = '/api/integrations/strava/connect'
-  }
-
-  const handleStravaDisconnect = async () => {
-    setStravaDisconnecting(true)
-    try {
-      const response = await fetch('/api/integrations/strava/disconnect', { method: 'POST' })
-      if (response.ok) {
-        toast.success('Strava disconnected')
-        setFitnessStatus(prev => ({ ...prev, strava_connected: false }))
-      } else {
-        toast.error('Failed to disconnect Strava')
-      }
-    } catch {
-      toast.error('Failed to disconnect Strava')
-    } finally {
-      setStravaDisconnecting(false)
     }
   }
 
@@ -395,63 +365,6 @@ function SettingsContent() {
               <Button onClick={handleConnect}>
                 <Calendar className="h-4 w-4 mr-2" />
                 Connect Google Calendar
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Strava Integration */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Activity className="h-5 w-5 text-orange-500" />
-            <CardTitle>Strava</CardTitle>
-          </div>
-          <CardDescription>
-            Connect Strava to share your workout data with the AI for better planning
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin" />
-            </div>
-          ) : fitnessStatus.strava_connected ? (
-            <div className="space-y-4">
-              <div className="flex items-center gap-2">
-                <Badge variant="secondary" className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100">
-                  <Check className="h-3 w-3 mr-1" />
-                  Connected
-                </Badge>
-              </div>
-              <p className="text-sm text-muted-foreground">
-                Your recent activities will be included in AI planning context.
-              </p>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={handleStravaDisconnect}
-                disabled={stravaDisconnecting}
-              >
-                {stravaDisconnecting ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Disconnecting...
-                  </>
-                ) : (
-                  'Disconnect Strava'
-                )}
-              </Button>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Connect Strava to let the AI see your recent workouts and help plan training around your schedule.
-              </p>
-              <Button onClick={handleStravaConnect} className="bg-orange-500 hover:bg-orange-600">
-                <Activity className="h-4 w-4 mr-2" />
-                Connect Strava
               </Button>
             </div>
           )}

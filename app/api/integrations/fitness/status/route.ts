@@ -1,6 +1,10 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
-import { isGarminConfigured } from '@/lib/garmin'
+
+// Check Garmin config inline to avoid importing garmin-connect library
+function isGarminConfigured(): boolean {
+  return !!(process.env.GARMIN_EMAIL && process.env.GARMIN_PASSWORD)
+}
 
 export async function GET() {
   const supabase = await createClient()
@@ -11,14 +15,7 @@ export async function GET() {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const { data: integration } = await supabase
-    .from('user_integrations')
-    .select('strava_connected')
-    .eq('user_id', user.id)
-    .single()
-
   return NextResponse.json({
-    strava_connected: integration?.strava_connected ?? false,
     // Garmin is configured via env vars, not OAuth
     garmin_connected: isGarminConfigured(),
   })

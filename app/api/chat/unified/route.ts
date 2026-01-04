@@ -11,16 +11,11 @@ import {
   formatBusySlots,
   type GoogleCalendarEvent,
 } from "@/lib/google-calendar";
-import {
-  getStravaActivities,
-  formatStravaForLLM,
-  type StravaActivity,
-} from "@/lib/strava";
-import {
-  getGarminWellnessSummary,
-  formatGarminForLLM,
-  isGarminConfigured,
-} from "@/lib/garmin";
+
+// Check Garmin config inline to avoid importing garmin-connect library at module level
+function isGarminConfigured(): boolean {
+  return !!(process.env.GARMIN_EMAIL && process.env.GARMIN_PASSWORD);
+}
 
 /**
  * POST /api/chat/unified - Unified chat with full pursuit context
@@ -368,31 +363,19 @@ async function buildUnifiedChatContext(
     console.error('[Calendar] Failed to fetch calendar data:', error);
   }
 
-  // Fetch fitness data (Strava activities)
-  let stravaActivities: StravaActivity[] = [];
-  try {
-    // Check if user has Strava connected (use maybeSingle to handle no row case)
-    const { data: integration, error: intError } = await supabase
-      .from('user_integrations')
-      .select('strava_connected')
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    console.log(`[Fitness] Strava check for user ${userId}: connected=${integration?.strava_connected ?? 'no row'}, error=${intError?.message || 'none'}`);
-
-    if (integration?.strava_connected) {
-      stravaActivities = await getStravaActivities(userId, 7);
-      console.log(`[Fitness] Fetched ${stravaActivities.length} Strava activities`);
-    }
-  } catch (error) {
-    console.error('[Fitness] Failed to fetch Strava data:', error);
-  }
-
-  // Fetch Garmin wellness data (if configured via env vars)
-  let garminData: Awaited<ReturnType<typeof getGarminWellnessSummary>> = null;
+  // Fetch Garmin wellness data (if configured via env vars, dynamically import to avoid bundling)
+  let garminData: {
+    sleep: unknown;
+    heartRate: unknown;
+    daily: unknown;
+    activities: unknown[];
+  } | null = null;
+  let formatGarminForLLM: ((data: any) => string) | null = null;
   try {
     if (isGarminConfigured()) {
-      garminData = await getGarminWellnessSummary();
+      const garmin = await import("@/lib/garmin");
+      garminData = await garmin.getGarminWellnessSummary();
+      formatGarminForLLM = garmin.formatGarminForLLM;
       console.log(`[Fitness] Fetched Garmin wellness data`);
     }
   } catch (error) {
@@ -408,8 +391,8 @@ async function buildUnifiedChatContext(
     calendar_events: calendarEvents,
     busy_slots: busySlots,
     calendar_settings: calendarSettings,
-    strava_activities: stravaActivities,
     garmin_data: garminData,
+    formatGarminForLLM,
   };
 }
 
@@ -429,7 +412,7 @@ function formatUnifiedChatMessages(context: any, messages: any[]): any[] {
  * Build system prompt for unified chat with full context
  */
 function buildUnifiedSystemPrompt(context: any): string {
-  const { all_pursuits, progress_map, selected_pursuit, selected_pursuit_subgoals, memories, calendar_events, busy_slots, calendar_settings, strava_activities, garmin_data } = context;
+  const { all_pursuits, progress_map, selected_pursuit, selected_pursuit_subgoals, memories, calendar_events, busy_slots, calendar_settings, garmin_data, formatGarminForLLM } = context;
 
   // Build pursuit status overview
   const pursuitOverview = all_pursuits.map((pursuit: any) => {
@@ -491,23 +474,16 @@ Use this calendar context to:
 - Consider meeting preparation and transition time`
     : '';
 
-  // Build fitness section if Strava or Garmin is connected
-  const hasStravaData = strava_activities && strava_activities.length > 0;
-  const hasGarminData = garmin_data && (garmin_data.sleep || garmin_data.daily || garmin_data.heartRate);
+  // Build fitness section if Garmin is connected
+  const hasGarminData = garmin_data && (garmin_data.sleep || garmin_data.daily || garmin_data.heartRate || garmin_data.activities?.length > 0);
 
   let fitnessSection = '';
-  if (hasStravaData || hasGarminData) {
-    fitnessSection = '\n\n## Fitness & Wellness Data';
+  if (hasGarminData && formatGarminForLLM) {
+    fitnessSection = `\n\n## Fitness & Wellness Data (Garmin)
 
-    if (hasGarminData) {
-      fitnessSection += `\n\n### Today's Wellness (Garmin)\n${formatGarminForLLM(garmin_data)}`;
-    }
+${formatGarminForLLM(garmin_data)}
 
-    if (hasStravaData) {
-      fitnessSection += `\n\n### Recent Activities (Strava - Last 7 Days)\n${formatStravaForLLM(strava_activities)}`;
-    }
-
-    fitnessSection += `\n\nUse this fitness context to:
+Use this fitness context to:
 - Consider recovery needs based on sleep quality and Body Battery
 - Suggest lighter cognitive work if sleep was poor or Body Battery is low
 - Factor in recent training load when planning intense activities

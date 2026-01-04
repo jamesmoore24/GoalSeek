@@ -1,7 +1,10 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
-import { getStravaActivities, getStravaStats, formatStravaForLLM } from '@/lib/strava'
-import { getGarminWellnessSummary, formatGarminForLLM, isGarminConfigured } from '@/lib/garmin'
+
+// Check Garmin config inline to avoid importing garmin-connect library at module level
+function isGarminConfigured(): boolean {
+  return !!(process.env.GARMIN_EMAIL && process.env.GARMIN_PASSWORD)
+}
 
 export async function GET() {
   const supabase = await createClient()
@@ -17,28 +20,11 @@ export async function GET() {
     timestamp: new Date().toISOString(),
   }
 
-  // Test Strava
-  try {
-    const stravaActivities = await getStravaActivities(user.id, 7)
-    const stravaStats = await getStravaStats(user.id)
-    results.strava = {
-      connected: stravaActivities.length > 0 || stravaStats !== null,
-      activities_count: stravaActivities.length,
-      activities: stravaActivities.slice(0, 3), // First 3 for preview
-      stats: stravaStats,
-      llm_format: formatStravaForLLM(stravaActivities),
-    }
-  } catch (error) {
-    results.strava = {
-      connected: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    }
-  }
-
-  // Test Garmin
+  // Test Garmin (dynamically import to avoid bundling issues)
   try {
     const garminConfigured = isGarminConfigured()
     if (garminConfigured) {
+      const { getGarminWellnessSummary, formatGarminForLLM } = await import('@/lib/garmin')
       const garminData = await getGarminWellnessSummary()
       results.garmin = {
         configured: true,
