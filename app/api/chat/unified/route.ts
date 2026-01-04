@@ -19,6 +19,22 @@ function isGarminConfigured(): boolean {
   return !!(process.env.GARMIN_EMAIL && process.env.GARMIN_PASSWORD);
 }
 
+// Status step types for streaming
+type StatusStep =
+  | 'memories'
+  | 'pursuits'
+  | 'calendar'
+  | 'garmin'
+  | 'generating';
+
+interface StatusUpdate {
+  type: 'status';
+  step: StatusStep;
+  status: 'loading' | 'complete' | 'skipped' | 'error';
+  message: string;
+  detail?: string;
+}
+
 /**
  * POST /api/chat/unified - Unified chat with full pursuit context
  * Request body:
@@ -56,17 +72,6 @@ export async function POST(request: Request) {
       .map((m: any) => typeof m.content === 'string' ? m.content : m.content?.find((c: any) => c.type === 'text')?.text || '')
       .pop() || '';
 
-    // Build comprehensive context with semantic memory retrieval
-    const context = await buildUnifiedChatContext(
-      userId,
-      selected_pursuit_id,
-      include_all_pursuits,
-      latestUserMessage
-    );
-
-    // Format messages with unified context
-    const formattedMessages = formatUnifiedChatMessages(context, messages);
-
     // Debug: log if images are being sent
     const hasImages = messages.some((m: any) =>
       Array.isArray(m.content) && m.content.some((c: any) => c.type === 'image_url')
@@ -75,26 +80,50 @@ export async function POST(request: Request) {
       console.log('[Unified Chat] Multimodal request detected - sending images to Gemini');
     }
 
-    const openRouter = getOpenRouterInstance();
-
-    // Call with function calling enabled
-    const response = await openRouter.chat.completions.create({
-      model: PLAN_MODEL,
-      messages: formattedMessages as any,
-      tools: getPursuitFunctionDefinitions(),
-      tool_choice: "auto",
-      temperature: 0.7,
-      stream: true,
-    });
-
-    // Create streaming response
+    // Create streaming response that includes status updates
     const encoder = new TextEncoder();
     const readableStream = new ReadableStream({
       async start(controller) {
-        let contentBuffer = "";
-        let functionCalls: any[] = [];
+        // Helper to send status updates
+        const sendStatus = (update: StatusUpdate) => {
+          controller.enqueue(encoder.encode(JSON.stringify(update) + "\n"));
+        };
 
         try {
+          // Build context with status streaming
+          const context = await buildUnifiedChatContextWithStatus(
+            userId,
+            selected_pursuit_id,
+            include_all_pursuits,
+            latestUserMessage,
+            sendStatus
+          );
+
+          // Format messages with unified context
+          const formattedMessages = formatUnifiedChatMessages(context, messages);
+
+          // Start LLM generation
+          sendStatus({
+            type: 'status',
+            step: 'generating',
+            status: 'loading',
+            message: 'Generating response...',
+          });
+
+          const openRouter = getOpenRouterInstance();
+          const response = await openRouter.chat.completions.create({
+            model: PLAN_MODEL,
+            messages: formattedMessages as any,
+            tools: getPursuitFunctionDefinitions(),
+            tool_choice: "auto",
+            temperature: 0.7,
+            stream: true,
+          });
+
+          let contentBuffer = "";
+          let functionCalls: any[] = [];
+          let firstContent = true;
+
           for await (const chunk of response) {
             const delta = chunk.choices[0]?.delta;
 
@@ -128,6 +157,17 @@ export async function POST(request: Request) {
             // Handle content
             const text = delta?.content || "";
             if (text) {
+              // Mark generating as complete on first content
+              if (firstContent) {
+                sendStatus({
+                  type: 'status',
+                  step: 'generating',
+                  status: 'complete',
+                  message: 'Response ready',
+                });
+                firstContent = false;
+              }
+
               contentBuffer += text;
               controller.enqueue(
                 encoder.encode(
@@ -212,20 +252,28 @@ export async function POST(request: Request) {
 }
 
 /**
- * Build comprehensive context for unified chat
+ * Build comprehensive context for unified chat with status streaming
  */
-async function buildUnifiedChatContext(
+async function buildUnifiedChatContextWithStatus(
   userId: string,
-  selectedPursuitId?: string,
-  includeAllPursuits: boolean = true,
-  userMessage: string = ''
+  selectedPursuitId: string | undefined,
+  includeAllPursuits: boolean,
+  userMessage: string,
+  sendStatus: (update: StatusUpdate) => void
 ) {
   const supabase = createClient();
 
-  // Fetch memories using semantic search if we have a user message
+  // === STEP 1: Fetch memories ===
+  sendStatus({
+    type: 'status',
+    step: 'memories',
+    status: 'loading',
+    message: 'Searching memories...',
+  });
+
   let memories: any[] = [];
-  if (userMessage && userMessage.length > 10) {
-    try {
+  try {
+    if (userMessage && userMessage.length > 10) {
       // Embed the user message for semantic search
       const queryEmbedding = await embedText(userMessage);
 
@@ -233,32 +281,52 @@ async function buildUnifiedChatContext(
       const { data, error } = await supabase.rpc("search_memories", {
         query_embedding: formatEmbeddingForPgvector(queryEmbedding),
         match_user_id: userId,
-        match_threshold: 0.5, // Lower threshold to get more context
+        match_threshold: 0.5,
         match_count: 10,
       });
 
       if (!error && data) {
         memories = data;
-        console.log(`[RAG] Found ${memories.length} relevant memories via semantic search`);
       }
-    } catch (error) {
-      console.error('[RAG] Semantic search failed, falling back to recent:', error);
     }
+
+    // Fallback to recent memories if semantic search returned nothing
+    if (memories.length === 0) {
+      const memoriesRes = await supabase
+        .from("user_memories")
+        .select("*")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(10);
+
+      memories = memoriesRes.data || [];
+    }
+
+    sendStatus({
+      type: 'status',
+      step: 'memories',
+      status: 'complete',
+      message: memories.length > 0 ? `Found ${memories.length} memories` : 'No memories found',
+      detail: memories.length > 0 ? `${memories.length} relevant` : undefined,
+    });
+  } catch (error) {
+    console.error('[RAG] Memory search failed:', error);
+    sendStatus({
+      type: 'status',
+      step: 'memories',
+      status: 'error',
+      message: 'Memory search failed',
+    });
   }
 
-  // Fallback to recent memories if semantic search returned nothing or failed
-  if (memories.length === 0) {
-    const memoriesRes = await supabase
-      .from("user_memories")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .limit(10);
+  // === STEP 2: Fetch pursuits ===
+  sendStatus({
+    type: 'status',
+    step: 'pursuits',
+    status: 'loading',
+    message: 'Loading pursuits...',
+  });
 
-    memories = memoriesRes.data || [];
-  }
-
-  // Fetch all active pursuits with their progress
   const pursuitsRes = await supabase
     .from("pursuits")
     .select("*")
@@ -267,6 +335,12 @@ async function buildUnifiedChatContext(
     .order("priority", { ascending: true });
 
   if (pursuitsRes.error) {
+    sendStatus({
+      type: 'status',
+      step: 'pursuits',
+      status: 'error',
+      message: 'Failed to load pursuits',
+    });
     throw new Error(`Failed to fetch pursuits: ${pursuitsRes.error.message}`);
   }
 
@@ -277,7 +351,6 @@ async function buildUnifiedChatContext(
   await Promise.all(
     pursuits.map(async (pursuit) => {
       try {
-        // Calculate progress inline instead of calling API endpoint
         const weekStart = getWeekStart();
         const { data: logs } = await supabase
           .from("day_logs")
@@ -313,7 +386,7 @@ async function buildUnifiedChatContext(
 
   // If a specific pursuit is selected, fetch its subgoals
   let selectedPursuit = null;
-  let subgoals = [];
+  let subgoals: any[] = [];
   if (selectedPursuitId) {
     selectedPursuit = pursuits.find(p => p.id === selectedPursuitId);
 
@@ -329,7 +402,22 @@ async function buildUnifiedChatContext(
     }
   }
 
-// Fetch calendar events for the next 7 days if calendar is connected
+  sendStatus({
+    type: 'status',
+    step: 'pursuits',
+    status: 'complete',
+    message: `Loaded ${pursuits.length} pursuits`,
+    detail: pursuits.length > 0 ? `${pursuits.length} active` : undefined,
+  });
+
+  // === STEP 3: Fetch calendar events ===
+  sendStatus({
+    type: 'status',
+    step: 'calendar',
+    status: 'loading',
+    message: 'Checking calendar...',
+  });
+
   let calendarEvents: GoogleCalendarEvent[] = [];
   let busySlots: Array<{ start: Date; end: Date }> = [];
   let calendarSettings: { shareTitles: boolean; shareDescriptions: boolean } | null = null;
@@ -338,7 +426,7 @@ async function buildUnifiedChatContext(
     const now = new Date();
     const endDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-    // Check if user has calendar connected and get their settings
+    // Check if user has calendar connected
     const { data: integration } = await supabase
       .from('user_integrations')
       .select('google_calendar_connected, calendar_sync_enabled, share_event_titles, share_event_descriptions')
@@ -359,13 +447,39 @@ async function buildUnifiedChatContext(
       calendarEvents = events;
       busySlots = busy;
 
-      console.log(`[Calendar] Fetched ${calendarEvents.length} events and ${busySlots.length} busy slots`);
+      sendStatus({
+        type: 'status',
+        step: 'calendar',
+        status: 'complete',
+        message: `${calendarEvents.length} events loaded`,
+        detail: `${calendarEvents.length} events`,
+      });
+    } else {
+      sendStatus({
+        type: 'status',
+        step: 'calendar',
+        status: 'skipped',
+        message: 'Calendar not connected',
+      });
     }
   } catch (error) {
     console.error('[Calendar] Failed to fetch calendar data:', error);
+    sendStatus({
+      type: 'status',
+      step: 'calendar',
+      status: 'error',
+      message: 'Calendar fetch failed',
+    });
   }
 
-  // Fetch Garmin wellness data (if configured via env vars, dynamically import to avoid bundling)
+  // === STEP 4: Fetch Garmin wellness data ===
+  sendStatus({
+    type: 'status',
+    step: 'garmin',
+    status: 'loading',
+    message: 'Fetching Garmin data...',
+  });
+
   let garminData: {
     sleep: unknown;
     heartRate: unknown;
@@ -373,15 +487,37 @@ async function buildUnifiedChatContext(
     activities: unknown[];
   } | null = null;
   let formatGarminForLLM: ((data: any) => string) | null = null;
+
   try {
     if (isGarminConfigured()) {
       const garmin = await import("@/lib/garmin");
       garminData = await garmin.getGarminWellnessSummary();
       formatGarminForLLM = garmin.formatGarminForLLM;
-      console.log(`[Fitness] Fetched Garmin wellness data`);
+
+      const activityCount = garminData?.activities?.length || 0;
+      sendStatus({
+        type: 'status',
+        step: 'garmin',
+        status: 'complete',
+        message: 'Garmin data loaded',
+        detail: activityCount > 0 ? `${activityCount} activities` : 'wellness data',
+      });
+    } else {
+      sendStatus({
+        type: 'status',
+        step: 'garmin',
+        status: 'skipped',
+        message: 'Garmin not configured',
+      });
     }
   } catch (error) {
     console.error('[Fitness] Failed to fetch Garmin data:', error);
+    sendStatus({
+      type: 'status',
+      step: 'garmin',
+      status: 'error',
+      message: 'Garmin fetch failed',
+    });
   }
 
   // Fetch financial data if Plaid is connected

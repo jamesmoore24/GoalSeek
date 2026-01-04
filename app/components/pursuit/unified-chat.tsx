@@ -5,7 +5,7 @@ import type { Pursuit, PursuitProgress } from "@/types/pursuit";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Bot, User, Sparkles, Bookmark, Camera, X, ImageIcon, ChevronLeft, ChevronRight } from "lucide-react";
+import { Bot, User, Sparkles, Bookmark, Camera, X, ImageIcon, ChevronLeft, ChevronRight, Check, Loader2, AlertCircle, MinusCircle, Brain, Target, Calendar, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
@@ -37,12 +37,33 @@ interface SelectedImage {
   base64?: string; // full base64 for sending
 }
 
+// Pipeline status types
+type StatusStep = 'memories' | 'pursuits' | 'calendar' | 'garmin' | 'generating';
+type StatusState = 'loading' | 'complete' | 'skipped' | 'error' | 'idle';
+
+interface PipelineStatus {
+  memories: { status: StatusState; message?: string; detail?: string };
+  pursuits: { status: StatusState; message?: string; detail?: string };
+  calendar: { status: StatusState; message?: string; detail?: string };
+  garmin: { status: StatusState; message?: string; detail?: string };
+  generating: { status: StatusState; message?: string; detail?: string };
+}
+
+const initialPipelineStatus: PipelineStatus = {
+  memories: { status: 'idle' },
+  pursuits: { status: 'idle' },
+  calendar: { status: 'idle' },
+  garmin: { status: 'idle' },
+  generating: { status: 'idle' },
+};
+
 export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChange }: UnifiedChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSavingMemory, setIsSavingMemory] = useState(false);
   const [selectedImages, setSelectedImages] = useState<SelectedImage[]>([]);
+  const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus>(initialPipelineStatus);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -101,6 +122,7 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
     setInput("");
     setSelectedImages([]);
     setIsLoading(true);
+    setPipelineStatus(initialPipelineStatus); // Reset pipeline status
 
     try {
       // Convert message history to API format (handle images properly)
@@ -161,7 +183,17 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
           try {
             const data = JSON.parse(line);
 
-            if (data.type === "content") {
+            if (data.type === "status") {
+              // Update pipeline status
+              setPipelineStatus(prev => ({
+                ...prev,
+                [data.step]: {
+                  status: data.status,
+                  message: data.message,
+                  detail: data.detail,
+                },
+              }));
+            } else if (data.type === "content") {
               assistantMessage += data.content;
               setMessages(prev => {
                 const newMessages = [...prev];
@@ -488,17 +520,13 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
           ))
         )}
 
-        {isLoading && messages[messages.length - 1]?.role === 'assistant' && messages[messages.length - 1]?.content === "" && (
+        {isLoading && (
           <div className="flex gap-3 items-start">
             <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center shrink-0">
               <Bot className="h-5 w-5 text-primary-foreground" />
             </div>
-            <div className="bg-card border rounded-lg p-3 shadow-sm">
-              <div className="flex gap-1">
-                <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-              </div>
+            <div className="bg-card border rounded-lg p-3 shadow-sm min-w-[200px]">
+              <PipelineStatusDisplay status={pipelineStatus} />
             </div>
           </div>
         )}
@@ -620,6 +648,67 @@ async function fileToBase64(file: File): Promise<string> {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+// Pipeline status display component
+function PipelineStatusDisplay({ status }: { status: PipelineStatus }) {
+  const steps: Array<{ key: StatusStep; label: string; icon: React.ReactNode }> = [
+    { key: 'memories', label: 'Memories', icon: <Brain className="h-3.5 w-3.5" /> },
+    { key: 'pursuits', label: 'Pursuits', icon: <Target className="h-3.5 w-3.5" /> },
+    { key: 'calendar', label: 'Calendar', icon: <Calendar className="h-3.5 w-3.5" /> },
+    { key: 'garmin', label: 'Garmin', icon: <Activity className="h-3.5 w-3.5" /> },
+    { key: 'generating', label: 'AI', icon: <Sparkles className="h-3.5 w-3.5" /> },
+  ];
+
+  // Check if any step is active (not idle)
+  const hasActivity = Object.values(status).some(s => s.status !== 'idle');
+  if (!hasActivity) {
+    return (
+      <div className="flex gap-1">
+        <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+        <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+        <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {steps.map(({ key, label, icon }) => {
+        const stepStatus = status[key];
+        if (stepStatus.status === 'idle') return null;
+
+        return (
+          <div key={key} className="flex items-center gap-2 text-xs">
+            <div className={cn(
+              "flex items-center justify-center w-5 h-5 rounded-full",
+              stepStatus.status === 'loading' && "text-blue-500",
+              stepStatus.status === 'complete' && "text-green-500",
+              stepStatus.status === 'skipped' && "text-muted-foreground",
+              stepStatus.status === 'error' && "text-red-500",
+            )}>
+              {stepStatus.status === 'loading' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {stepStatus.status === 'complete' && <Check className="h-3.5 w-3.5" />}
+              {stepStatus.status === 'skipped' && <MinusCircle className="h-3.5 w-3.5" />}
+              {stepStatus.status === 'error' && <AlertCircle className="h-3.5 w-3.5" />}
+            </div>
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              {icon}
+              <span className={cn(
+                stepStatus.status === 'loading' && "text-foreground",
+                stepStatus.status === 'complete' && "text-muted-foreground",
+              )}>
+                {stepStatus.message || label}
+              </span>
+              {stepStatus.detail && (
+                <span className="text-muted-foreground/60">({stepStatus.detail})</span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 // Image carousel component for message images
