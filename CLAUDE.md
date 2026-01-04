@@ -202,22 +202,70 @@ Integrate Garmin and Strava data to automatically provide fitness context to all
 - Training load and fitness/freshness scores
 - Weekly training volume
 
+### Integration Pattern
+
+Follow the existing integrations pattern used for Google Calendar, Google Tasks, Whoop, and Weather.
+
+**Update `UserIntegrations` interface in `lib/supabase.ts`:**
+```typescript
+export interface UserIntegrations {
+  // ... existing fields
+  garmin_enabled?: boolean;
+  garmin_access_token?: string;
+  garmin_refresh_token?: string;
+  garmin_token_expires_at?: string;
+  strava_enabled?: boolean;
+  strava_access_token?: string;
+  strava_refresh_token?: string;
+  strava_token_expires_at?: string;
+}
+```
+
+**Add to `lib/integrations.ts`:**
+```typescript
+export interface GarminData {
+  bodyBattery: number;
+  sleep: { duration: number; score: number; stages: object };
+  hrv: { status: string; value: number };
+  stress: number;
+  restingHR: number;
+  steps: number;
+}
+
+export interface StravaActivity {
+  id: string;
+  type: string;
+  name: string;
+  startTime: Date;
+  duration: number;
+  distance?: number;
+  avgHeartRate?: number;
+  sufferScore?: number;
+}
+
+export async function getGarminData(): Promise<GarminData> { ... }
+export async function getStravaActivities(): Promise<StravaActivity[]> { ... }
+```
+
+### Settings UI
+
+Add Garmin and Strava toggles to the existing `/settings` page alongside Google Calendar and other integrations:
+- Connect/disconnect buttons with OAuth flow
+- Show connection status and last sync time
+- Enable/disable toggle for each integration
+
 ### Database Schema Additions
 
-**fitness_connections** - OAuth tokens for external services
-- user_id, provider ('garmin' | 'strava')
-- access_token, refresh_token, expires_at
-- last_sync_at
-
-**garmin_daily_summaries** - Daily health metrics from Garmin
-- date, sleep_score, sleep_duration_minutes
+**garmin_daily_summaries** - Cached daily health metrics
+- user_id, date
+- sleep_score, sleep_duration_minutes
 - body_battery_high, body_battery_low
 - avg_stress_level, resting_heart_rate
 - steps, active_minutes
 - hrv_status ('balanced' | 'low' | 'high')
 
-**strava_activities** - Synced Strava activities
-- strava_id, activity_type, name
+**strava_activities** - Cached Strava activities
+- user_id, strava_id, activity_type, name
 - start_time, duration_seconds
 - distance_meters, avg_heart_rate
 - suffer_score, perceived_exertion
@@ -226,25 +274,24 @@ Integrate Garmin and Strava data to automatically provide fitness context to all
 
 **Step 1: OAuth Setup**
 - Add `/api/integrations/garmin/connect` - initiates OAuth flow
-- Add `/api/integrations/garmin/callback` - handles OAuth callback, stores tokens
+- Add `/api/integrations/garmin/callback` - handles OAuth callback, stores tokens in UserIntegrations
 - Add `/api/integrations/strava/connect` and `/callback` routes
-- Create settings UI for connecting/disconnecting accounts
+- Add enable/disable toggles to `/settings` page
 
 **Step 2: Data Sync**
-- Create `/lib/integrations/garmin.ts` - Garmin API client
-- Create `/lib/integrations/strava.ts` - Strava API client
+- Add `getGarminData()` and `getStravaActivities()` to `lib/integrations.ts`
 - Add background sync via Supabase Edge Functions or cron
 - Sync last 7 days on initial connect, then daily updates
 
 **Step 3: Context Integration**
-- Update `lib/planning/context.ts` to include fitness data
+- Update `lib/planning/context.ts` to include fitness data when enabled
 - Replace manual body_readiness input with Garmin Body Battery
 - Replace manual sleep_quality with Garmin sleep score
 - Auto-populate recent health activities from Strava
 
 **Step 4: Chat Context**
 - Create `/lib/fitness/summary.ts` - generates natural language fitness summary
-- Inject fitness context into all chat system prompts
+- Inject fitness context into all chat system prompts when integrations are enabled
 - Include: last night's sleep, current body battery, recent workouts, training load
 
 ### Context Format for LLM
@@ -279,32 +326,6 @@ GARMIN_CLIENT_ID=
 GARMIN_CLIENT_SECRET=
 STRAVA_CLIENT_ID=
 STRAVA_CLIENT_SECRET=
-```
-
-### File Structure
-
-```
-/app/api/integrations
-  /garmin
-    /connect/route.ts      # OAuth initiation
-    /callback/route.ts     # OAuth callback
-    /sync/route.ts         # Manual sync trigger
-  /strava
-    /connect/route.ts
-    /callback/route.ts
-    /sync/route.ts
-
-/lib/integrations
-  garmin.ts                # Garmin API client
-  strava.ts                # Strava API client
-  sync.ts                  # Sync orchestration
-
-/lib/fitness
-  summary.ts               # Generate LLM-friendly fitness summary
-  types.ts                 # Fitness data types
-
-/app/components/settings
-  fitness-connections.tsx  # UI for managing connections
 ```
 
 ### Constraints and Rules Integration
