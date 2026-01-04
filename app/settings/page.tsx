@@ -8,10 +8,11 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Separator } from '@/components/ui/separator'
-import { Calendar, Check, Loader2, ArrowLeft, Watch } from 'lucide-react'
+import { Calendar, Check, Loader2, ArrowLeft, Watch, Landmark, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
+import { usePlaidLink } from 'react-plaid-link'
 
 interface CalendarInfo {
   id: string
@@ -37,6 +38,18 @@ interface FitnessStatus {
   garmin_connected: boolean
 }
 
+interface PlaidStatus {
+  connected: boolean
+  institutionName?: string
+  lastSyncAt?: string
+  settings?: {
+    plaid_sync_enabled: boolean
+    plaid_share_account_names: boolean
+    plaid_share_transaction_details: boolean
+    plaid_share_balances: boolean
+  }
+}
+
 function SettingsContent() {
   const searchParams = useSearchParams()
   const [status, setStatus] = useState<CalendarStatus>({ connected: false, settings: null })
@@ -48,6 +61,10 @@ function SettingsContent() {
   const [fitnessStatus, setFitnessStatus] = useState<FitnessStatus>({
     garmin_connected: false,
   })
+  const [plaidStatus, setPlaidStatus] = useState<PlaidStatus>({ connected: false })
+  const [plaidLinkToken, setPlaidLinkToken] = useState<string | null>(null)
+  const [plaidSyncing, setPlaidSyncing] = useState(false)
+  const [plaidDisconnecting, setPlaidDisconnecting] = useState(false)
 
   // Handle URL params for success/error messages
   useEffect(() => {
@@ -75,9 +92,10 @@ function SettingsContent() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const [calendarResponse, fitnessResponse] = await Promise.all([
+      const [calendarResponse, fitnessResponse, plaidResponse] = await Promise.all([
         fetch('/api/integrations/google/status'),
         fetch('/api/integrations/fitness/status'),
+        fetch('/api/integrations/plaid/status'),
       ])
 
       const calendarData = await calendarResponse.json()
@@ -89,6 +107,11 @@ function SettingsContent() {
       if (fitnessResponse.ok) {
         const fitnessData = await fitnessResponse.json()
         setFitnessStatus(fitnessData)
+      }
+
+      if (plaidResponse.ok) {
+        const plaidData = await plaidResponse.json()
+        setPlaidStatus(plaidData)
       }
     } catch (error) {
       console.error('Failed to fetch status:', error)
@@ -194,6 +217,109 @@ function SettingsContent() {
       }
     } catch {
       toast.error('Failed to save selection')
+    }
+  }
+
+  // Plaid Link handlers
+  const fetchPlaidLinkToken = async () => {
+    try {
+      const response = await fetch('/api/integrations/plaid/link-token', { method: 'POST' })
+      if (response.ok) {
+        const data = await response.json()
+        setPlaidLinkToken(data.link_token)
+      } else {
+        toast.error('Failed to initialize Plaid connection')
+      }
+    } catch {
+      toast.error('Failed to initialize Plaid connection')
+    }
+  }
+
+  const handlePlaidSuccess = async (publicToken: string, metadata: any) => {
+    try {
+      const response = await fetch('/api/integrations/plaid/callback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          public_token: publicToken,
+          institution: metadata.institution,
+        }),
+      })
+      if (response.ok) {
+        toast.success('Financial account connected!')
+        fetchStatus()
+      } else {
+        toast.error('Failed to connect financial account')
+      }
+    } catch {
+      toast.error('Failed to connect financial account')
+    }
+    setPlaidLinkToken(null)
+  }
+
+  const { open: openPlaidLink, ready: plaidReady } = usePlaidLink({
+    token: plaidLinkToken,
+    onSuccess: handlePlaidSuccess,
+    onExit: () => setPlaidLinkToken(null),
+  })
+
+  useEffect(() => {
+    if (plaidLinkToken && plaidReady) {
+      openPlaidLink()
+    }
+  }, [plaidLinkToken, plaidReady, openPlaidLink])
+
+  const handlePlaidDisconnect = async () => {
+    setPlaidDisconnecting(true)
+    try {
+      const response = await fetch('/api/integrations/plaid/disconnect', { method: 'POST' })
+      if (response.ok) {
+        toast.success('Financial account disconnected')
+        setPlaidStatus({ connected: false })
+      } else {
+        toast.error('Failed to disconnect')
+      }
+    } catch {
+      toast.error('Failed to disconnect')
+    } finally {
+      setPlaidDisconnecting(false)
+    }
+  }
+
+  const handlePlaidSync = async () => {
+    setPlaidSyncing(true)
+    try {
+      const response = await fetch('/api/integrations/plaid/sync', { method: 'POST' })
+      if (response.ok) {
+        toast.success('Financial data synced')
+        fetchStatus()
+      } else {
+        toast.error('Failed to sync')
+      }
+    } catch {
+      toast.error('Failed to sync')
+    } finally {
+      setPlaidSyncing(false)
+    }
+  }
+
+  const handlePlaidSettingToggle = async (key: string, value: boolean) => {
+    try {
+      const response = await fetch('/api/integrations/plaid/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [key]: value }),
+      })
+      if (response.ok) {
+        setPlaidStatus(prev => ({
+          ...prev,
+          settings: prev.settings ? { ...prev.settings, [key]: value } : undefined,
+        }))
+      } else {
+        toast.error('Failed to update setting')
+      }
+    } catch {
+      toast.error('Failed to update setting')
     }
   }
 
@@ -413,6 +539,156 @@ function SettingsContent() {
                   GARMIN_PASSWORD=your_password
                 </code>
               </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Plaid Financial Integration */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Landmark className="h-5 w-5 text-green-600" />
+            <CardTitle>Financial Accounts</CardTitle>
+          </div>
+          <CardDescription>
+            Connect your bank accounts and credit cards via Plaid for financial context
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {loading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin" />
+            </div>
+          ) : plaidStatus.connected ? (
+            <>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Badge variant="secondary" className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100">
+                    <Check className="h-3 w-3 mr-1" />
+                    Connected
+                  </Badge>
+                  {plaidStatus.institutionName && (
+                    <span className="text-sm text-muted-foreground">
+                      {plaidStatus.institutionName}
+                    </span>
+                  )}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePlaidSync}
+                  disabled={plaidSyncing}
+                >
+                  {plaidSyncing ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
+                  <span className="ml-2">Sync</span>
+                </Button>
+              </div>
+
+              {plaidStatus.lastSyncAt && (
+                <p className="text-xs text-muted-foreground">
+                  Last synced: {new Date(plaidStatus.lastSyncAt).toLocaleString()}
+                </p>
+              )}
+
+              <Separator />
+
+              {/* Privacy Settings */}
+              <div className="space-y-4">
+                <h4 className="font-medium">Privacy Settings</h4>
+                <p className="text-sm text-muted-foreground">
+                  Control what financial data is shared with the AI
+                </p>
+
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="plaid-sync">Enable financial sync</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Include finances in AI planning context
+                      </p>
+                    </div>
+                    <Switch
+                      id="plaid-sync"
+                      checked={plaidStatus.settings?.plaid_sync_enabled ?? true}
+                      onCheckedChange={(v) => handlePlaidSettingToggle('plaid_sync_enabled', v)}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="plaid-accounts">Share account names</Label>
+                      <p className="text-xs text-muted-foreground">
+                        AI can see account names (e.g., &quot;Chase Checking&quot;)
+                      </p>
+                    </div>
+                    <Switch
+                      id="plaid-accounts"
+                      checked={plaidStatus.settings?.plaid_share_account_names ?? true}
+                      onCheckedChange={(v) => handlePlaidSettingToggle('plaid_share_account_names', v)}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="plaid-transactions">Share transaction details</Label>
+                      <p className="text-xs text-muted-foreground">
+                        AI can see merchant names and categories
+                      </p>
+                    </div>
+                    <Switch
+                      id="plaid-transactions"
+                      checked={plaidStatus.settings?.plaid_share_transaction_details ?? true}
+                      onCheckedChange={(v) => handlePlaidSettingToggle('plaid_share_transaction_details', v)}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="plaid-balances">Share balances</Label>
+                      <p className="text-xs text-muted-foreground">
+                        AI can see account balances and net worth
+                      </p>
+                    </div>
+                    <Switch
+                      id="plaid-balances"
+                      checked={plaidStatus.settings?.plaid_share_balances ?? true}
+                      onCheckedChange={(v) => handlePlaidSettingToggle('plaid_share_balances', v)}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <Separator />
+
+              <Button
+                variant="destructive"
+                onClick={handlePlaidDisconnect}
+                disabled={plaidDisconnecting}
+              >
+                {plaidDisconnecting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Disconnecting...
+                  </>
+                ) : (
+                  'Disconnect Financial Account'
+                )}
+              </Button>
+            </>
+          ) : (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Connect your bank accounts and credit cards to let the AI understand your financial context for better planning.
+              </p>
+              <Button onClick={fetchPlaidLinkToken}>
+                <Landmark className="h-4 w-4 mr-2" />
+                Connect Financial Account
+              </Button>
             </div>
           )}
         </CardContent>
