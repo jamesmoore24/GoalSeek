@@ -180,6 +180,141 @@ npm run dev:ios         # Build, sync, and open Xcode
 - Shows inline photo picker on iOS for GPT-4o
 - Falls back to file input on web
 
+## Fitness Data Integration (Planned)
+
+### Overview
+
+Integrate Garmin and Strava data to automatically provide fitness context to all chat interactions and planning decisions. This replaces manual entry of body readiness, sleep quality, and activity history with real data.
+
+### Data Sources
+
+**Garmin Connect API**
+- Sleep data: duration, sleep score, sleep stages (deep, light, REM)
+- Body Battery: current level, recharge/drain history
+- HRV (Heart Rate Variability): stress indicator, recovery status
+- Resting heart rate trends
+- Steps and daily movement
+- Stress levels throughout the day
+
+**Strava API**
+- Recent activities: runs, rides, swims, strength sessions
+- Activity details: distance, duration, pace, heart rate zones
+- Training load and fitness/freshness scores
+- Weekly training volume
+
+### Database Schema Additions
+
+**fitness_connections** - OAuth tokens for external services
+- user_id, provider ('garmin' | 'strava')
+- access_token, refresh_token, expires_at
+- last_sync_at
+
+**garmin_daily_summaries** - Daily health metrics from Garmin
+- date, sleep_score, sleep_duration_minutes
+- body_battery_high, body_battery_low
+- avg_stress_level, resting_heart_rate
+- steps, active_minutes
+- hrv_status ('balanced' | 'low' | 'high')
+
+**strava_activities** - Synced Strava activities
+- strava_id, activity_type, name
+- start_time, duration_seconds
+- distance_meters, avg_heart_rate
+- suffer_score, perceived_exertion
+
+### Implementation Plan
+
+**Step 1: OAuth Setup**
+- Add `/api/integrations/garmin/connect` - initiates OAuth flow
+- Add `/api/integrations/garmin/callback` - handles OAuth callback, stores tokens
+- Add `/api/integrations/strava/connect` and `/callback` routes
+- Create settings UI for connecting/disconnecting accounts
+
+**Step 2: Data Sync**
+- Create `/lib/integrations/garmin.ts` - Garmin API client
+- Create `/lib/integrations/strava.ts` - Strava API client
+- Add background sync via Supabase Edge Functions or cron
+- Sync last 7 days on initial connect, then daily updates
+
+**Step 3: Context Integration**
+- Update `lib/planning/context.ts` to include fitness data
+- Replace manual body_readiness input with Garmin Body Battery
+- Replace manual sleep_quality with Garmin sleep score
+- Auto-populate recent health activities from Strava
+
+**Step 4: Chat Context**
+- Create `/lib/fitness/summary.ts` - generates natural language fitness summary
+- Inject fitness context into all chat system prompts
+- Include: last night's sleep, current body battery, recent workouts, training load
+
+### Context Format for LLM
+
+```
+## Fitness Context (from Garmin & Strava)
+
+**Today's Readiness:**
+- Body Battery: 65/100 (started at 85, drained 20 points)
+- Last Night's Sleep: 7h 12m, score 78/100 (light sleep dominant)
+- HRV Status: Balanced
+- Resting HR: 52 bpm (normal range)
+- Stress: Low-moderate throughout morning
+
+**Recent Activity (last 7 days):**
+- Monday: 45min run, 5.2mi, moderate effort (Strava)
+- Wednesday: 60min strength training (Strava)
+- Friday: 30min recovery ride (Strava)
+- Weekly training load: 4.2 hours, trending up
+
+**Recovery Notes:**
+- 2 rest days since last intense session
+- Body Battery fully recharged overnight
+- Good conditions for high-intensity work
+```
+
+### Environment Variables
+
+Add to `.env.local`:
+```
+GARMIN_CLIENT_ID=
+GARMIN_CLIENT_SECRET=
+STRAVA_CLIENT_ID=
+STRAVA_CLIENT_SECRET=
+```
+
+### File Structure
+
+```
+/app/api/integrations
+  /garmin
+    /connect/route.ts      # OAuth initiation
+    /callback/route.ts     # OAuth callback
+    /sync/route.ts         # Manual sync trigger
+  /strava
+    /connect/route.ts
+    /callback/route.ts
+    /sync/route.ts
+
+/lib/integrations
+  garmin.ts                # Garmin API client
+  strava.ts                # Strava API client
+  sync.ts                  # Sync orchestration
+
+/lib/fitness
+  summary.ts               # Generate LLM-friendly fitness summary
+  types.ts                 # Fitness data types
+
+/app/components/settings
+  fitness-connections.tsx  # UI for managing connections
+```
+
+### Constraints and Rules Integration
+
+Fitness data enables smarter constraint checking:
+- Block high-intensity work when Body Battery < 30
+- Suggest recovery activities after 3+ consecutive training days
+- Warn about sleep debt when sleep score < 60 for 2+ days
+- Auto-adjust intensity recommendations based on HRV status
+
 ## Development Conventions
 
 ### Commit Style
