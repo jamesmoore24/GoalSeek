@@ -1,17 +1,13 @@
 import { GarminConnect } from 'garmin-connect'
-import fs from 'fs'
-import path from 'path'
 
-// Singleton client instance
-let client: InstanceType<typeof GarminConnect> | null = null
+// In-memory token cache (works within a single serverless invocation)
+let cachedClient: InstanceType<typeof GarminConnect> | null = null
 let lastLogin: number = 0
 const LOGIN_INTERVAL = 30 * 60 * 1000 // Re-login every 30 minutes
 
-// Token storage path (in project root, gitignored)
-const TOKEN_DIR = path.join(process.cwd(), '.garmin-tokens')
-
 /**
  * Get or create a Garmin Connect client
+ * Note: In serverless environments, this logs in fresh each cold start
  */
 async function getClient(): Promise<InstanceType<typeof GarminConnect> | null> {
   const email = process.env.GARMIN_EMAIL
@@ -24,44 +20,30 @@ async function getClient(): Promise<InstanceType<typeof GarminConnect> | null> {
 
   const now = Date.now()
 
-  // Return existing client if still valid
-  if (client && now - lastLogin < LOGIN_INTERVAL) {
-    return client
+  // Return existing client if still valid (within same serverless instance)
+  if (cachedClient && now - lastLogin < LOGIN_INTERVAL) {
+    console.log('[Garmin] Using cached client')
+    return cachedClient
   }
 
   try {
-    client = new GarminConnect({
+    console.log('[Garmin] Creating new client and logging in...')
+    const client = new GarminConnect({
       username: email,
       password: password,
     })
 
-    // Try to load saved tokens first
-    if (fs.existsSync(TOKEN_DIR)) {
-      try {
-        client.loadTokenByFile(TOKEN_DIR)
-        console.log('[Garmin] Loaded saved tokens')
-        lastLogin = now
-        return client
-      } catch {
-        console.log('[Garmin] Saved tokens expired, logging in fresh')
-      }
-    }
-
-    // Fresh login
+    // Fresh login (no filesystem token caching for serverless compatibility)
     await client.login()
-    lastLogin = now
 
-    // Save tokens for reuse
-    if (!fs.existsSync(TOKEN_DIR)) {
-      fs.mkdirSync(TOKEN_DIR, { recursive: true })
-    }
-    client.exportTokenToFile(TOKEN_DIR)
-    console.log('[Garmin] Logged in and saved tokens')
+    cachedClient = client
+    lastLogin = now
+    console.log('[Garmin] Login successful')
 
     return client
   } catch (error) {
     console.error('[Garmin] Login failed:', error)
-    client = null
+    cachedClient = null
     return null
   }
 }
