@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase";
+import { createClient } from "@/lib/supabase/server";
+import { requireAuth } from "@/lib/auth-helpers";
 import { CreatePursuitSchema } from "@/lib/schemas/pursuit";
 import type { Pursuit } from "@/types/pursuit";
-
-// Mock user ID (replace with actual auth when implemented)
-const MOCK_USER_ID = "00000000-0000-0000-0000-000000000000";
 
 /**
  * GET /api/pursuits - List all pursuits
@@ -13,16 +11,19 @@ const MOCK_USER_ID = "00000000-0000-0000-0000-000000000000";
  */
 export async function GET(request: Request) {
   try {
+    // Require authentication
+    const { user, error: authError } = await requireAuth();
+    if (authError) return authError;
+
     const { searchParams } = new URL(request.url);
     const status = searchParams.get("status") || "active";
 
-    const userId = MOCK_USER_ID;
-    const supabase = createClient();
+    const supabase = await createClient();
 
     const query = supabase
       .from("pursuits")
       .select("*")
-      .eq("user_id", userId)
+      .eq("user_id", user!.id)
       .order("priority", { ascending: true })
       .order("created_at", { ascending: false });
 
@@ -52,6 +53,10 @@ export async function GET(request: Request) {
  */
 export async function POST(request: Request) {
   try {
+    // Require authentication
+    const { user, error: authError } = await requireAuth();
+    if (authError) return authError;
+
     const body = await request.json();
     const parseResult = CreatePursuitSchema.safeParse(body);
 
@@ -65,13 +70,12 @@ export async function POST(request: Request) {
       );
     }
 
-    const userId = MOCK_USER_ID;
-    const supabase = createClient();
+    const supabase = await createClient();
 
     const { data, error } = await supabase
       .from("pursuits")
       .insert({
-        user_id: userId,
+        user_id: user!.id,
         ...parseResult.data,
       })
       .select()
