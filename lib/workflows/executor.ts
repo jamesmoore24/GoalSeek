@@ -172,28 +172,27 @@ export class WorkflowExecutor {
       this.execution.user_feedback = updatedFeedback
       this.execution.iteration_count = newIteration
 
-      // Re-execute from the analyze step
+      // Re-execute from the beginning to rebuild context, then analyze
       if (!this.workflow) {
         await this.loadWorkflow()
       }
 
-      const analyzeStepIndex = this.workflow!.steps.findIndex(s => s.type === 'analyze')
-      if (analyzeStepIndex >= 0) {
-        for (let i = analyzeStepIndex; i < this.workflow!.steps.length; i++) {
-          const step = this.workflow!.steps[i]
-          const result = await this.executeStep(i, step)
+      // We need to re-fetch all data to rebuild context before analyzing
+      // Start from step 0 to ensure context is properly initialized
+      for (let i = 0; i < this.workflow!.steps.length; i++) {
+        const step = this.workflow!.steps[i]
+        const result = await this.executeStep(i, step)
 
-          if (result.status === 'failed') {
-            await this.handleStepFailure(i, result.error || 'Unknown error')
-            return { execution: this.execution, error: result.error }
-          }
+        if (result.status === 'failed') {
+          await this.handleStepFailure(i, result.error || 'Unknown error')
+          return { execution: this.execution, error: result.error }
+        }
 
-          if (step.type === 'user_interaction') {
-            await this.updateExecutionStatus('awaiting_user')
-            return {
-              execution: this.execution,
-              proposal: this.execution.pending_proposal || undefined,
-            }
+        if (step.type === 'user_interaction') {
+          await this.updateExecutionStatus('awaiting_user')
+          return {
+            execution: this.execution,
+            proposal: this.execution.pending_proposal || undefined,
           }
         }
       }
