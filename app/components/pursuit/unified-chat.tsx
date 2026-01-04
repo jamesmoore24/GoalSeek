@@ -549,7 +549,7 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
             disabled={isLoading || selectedImages.length >= 4}
             size="icon"
             variant="outline"
-            className="shrink-0 h-10 w-10"
+            className="shrink-0 h-10 w-10 self-end"
             title="Add photo"
           >
             {isNative ? (
@@ -580,7 +580,7 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
                 ? `Ask about ${selectedPursuit.name}...`
                 : "Ask about your pursuits..."
             }
-            className="resize-none flex-1"
+            className="resize-none flex-1 min-h-10 py-2"
             rows={1}
           />
 
@@ -590,7 +590,7 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
             disabled={isSavingMemory || messages.length === 0}
             size="icon"
             variant="ghost"
-            className="shrink-0 h-10 w-10"
+            className="shrink-0 h-10 w-10 self-end"
             title="Save conversation as memory"
           >
             <Bookmark className={cn("h-5 w-5", isSavingMemory && "animate-pulse")} />
