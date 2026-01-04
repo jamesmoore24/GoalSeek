@@ -336,6 +336,115 @@ Fitness data enables smarter constraint checking:
 - Warn about sleep debt when sleep score < 60 for 2+ days
 - Auto-adjust intensity recommendations based on HRV status
 
+## Plaid Financial Integration
+
+### Overview
+
+Integrate Plaid to provide financial context (balances, transactions, investments, liabilities) to all chat interactions and planning decisions. Financial data is contextual - it feeds into the LLM's awareness without requiring a dedicated UI.
+
+### Data Sources
+
+**Plaid API Products:**
+- Transactions: 30-day transaction history with merchant names and categories
+- Auth: Account and routing numbers
+- Investments: Holdings, securities, and portfolio values
+- Liabilities: Credit cards, student loans, mortgages
+
+### Implementation
+
+**Library:** `/lib/plaid.ts`
+- `createLinkToken(userId)` - Creates token for Plaid Link widget
+- `exchangePublicToken(publicToken)` - Exchanges for access token
+- `syncAccounts/Transactions/Investments/Liabilities(userId)` - Fetches and caches data
+- `getFinancialSummary(userId)` - Aggregates data for LLM context
+- `formatFinancesForLLM(summary)` - Formats context string
+
+**API Routes:** `/app/api/integrations/plaid/`
+- `POST /link-token` - Create Plaid Link token
+- `POST /callback` - Exchange public token, store access token, trigger sync
+- `GET /status` - Check connection status and settings
+- `PATCH /settings` - Update privacy toggles
+- `POST /disconnect` - Remove tokens and cached data
+- `POST /sync` - Manual data refresh
+
+**Types:** `/types/plaid.ts`
+- `PlaidAccount`, `PlaidTransaction`, `PlaidHolding`, `PlaidLiability`
+- `FinancialSummary` - Aggregated data for LLM
+- `PlaidSettings` - Privacy configuration
+
+### Database Schema
+
+**user_integrations additions:**
+- `plaid_connected`, `plaid_access_token`, `plaid_item_id`
+- `plaid_institution_name`, `plaid_last_sync_at`
+- Privacy: `plaid_sync_enabled`, `plaid_share_account_names`, `plaid_share_transaction_details`, `plaid_share_balances`
+
+**Caching tables (with RLS):**
+- `plaid_accounts` - Account info and balances
+- `plaid_transactions` - 30-day transaction cache
+- `plaid_holdings` - Investment positions
+- `plaid_liabilities` - Credit/loan details
+
+### Settings UI
+
+In `/app/settings/page.tsx`:
+- Connect button triggers Plaid Link modal (via `react-plaid-link`)
+- Shows institution name and last sync time
+- Manual "Sync Now" button
+- Privacy toggles for account names, transactions, balances
+- Disconnect functionality
+
+### Context Format for LLM
+
+```
+## Financial Overview (Chase Bank)
+
+### Net Worth: $127,450.32
+- Cash & Checking: $12,345.67
+- Investments: $98,234.56
+- Credit Card Debt: $2,345.67
+- Loans & Liabilities: $15,784.24
+
+### Accounts
+- Chase Total Checking (checking): $8,234.56
+- Vanguard Brokerage (investment): $98,234.56
+
+### Monthly Cash Flow (Last 30 Days)
+- Income: $8,500.00
+- Spending: $4,234.56
+- Net: $4,265.44
+
+### Spending by Category
+- Food and Drink: $856.23
+- Travel: $1,234.56
+- Shopping: $678.90
+
+### Recent Transactions
+- Jan 3: Whole Foods - $67.89
+- Jan 2: Uber - $23.45
+
+### Upcoming Payments
+- Chase Sapphire: $150.00 due Jan 15
+```
+
+### Environment Variables
+
+```
+PLAID_CLIENT_ID=
+PLAID_SECRET=
+PLAID_ENV=sandbox  # or 'development' or 'production'
+PLAID_PRODUCTS=transactions,investments,liabilities
+PLAID_COUNTRY_CODES=US
+```
+
+### Chat Integration
+
+Financial summary is fetched in `buildUnifiedChatContext()` and formatted via `formatFinancesForLLM()` into the system prompt. The LLM can:
+- Answer questions about spending and net worth
+- Consider budget when planning activities
+- Factor in upcoming payments for scheduling
+- Provide holistic planning considering financial health
+
 ## Development Conventions
 
 ### Commit Style

@@ -11,6 +11,8 @@ import {
   formatBusySlots,
   type GoogleCalendarEvent,
 } from "@/lib/google-calendar";
+import { getFinancialSummary, formatFinancesForLLM } from "@/lib/plaid";
+import type { FinancialSummary } from "@/types/plaid";
 
 // Check Garmin config inline to avoid importing garmin-connect library at module level
 function isGarminConfigured(): boolean {
@@ -327,7 +329,7 @@ async function buildUnifiedChatContext(
     }
   }
 
-  // Fetch calendar events for the next 7 days if calendar is connected
+// Fetch calendar events for the next 7 days if calendar is connected
   let calendarEvents: GoogleCalendarEvent[] = [];
   let busySlots: Array<{ start: Date; end: Date }> = [];
   let calendarSettings: { shareTitles: boolean; shareDescriptions: boolean } | null = null;
@@ -382,6 +384,17 @@ async function buildUnifiedChatContext(
     console.error('[Fitness] Failed to fetch Garmin data:', error);
   }
 
+  // Fetch financial data if Plaid is connected
+  let financialSummary: FinancialSummary | null = null;
+  try {
+    financialSummary = await getFinancialSummary(userId);
+    if (financialSummary) {
+      console.log('[Plaid] Financial data fetched for LLM context');
+    }
+  } catch (error) {
+    console.error('[Plaid] Failed to fetch financial data:', error);
+  }
+
   return {
     all_pursuits: pursuits,
     progress_map: progressMap,
@@ -393,6 +406,7 @@ async function buildUnifiedChatContext(
     calendar_settings: calendarSettings,
     garmin_data: garminData,
     formatGarminForLLM,
+    financial_summary: financialSummary,
   };
 }
 
@@ -412,7 +426,7 @@ function formatUnifiedChatMessages(context: any, messages: any[]): any[] {
  * Build system prompt for unified chat with full context
  */
 function buildUnifiedSystemPrompt(context: any): string {
-  const { all_pursuits, progress_map, selected_pursuit, selected_pursuit_subgoals, memories, calendar_events, busy_slots, calendar_settings, garmin_data, formatGarminForLLM } = context;
+const { all_pursuits, progress_map, selected_pursuit, selected_pursuit_subgoals, memories, calendar_events, busy_slots, calendar_settings, garmin_data, formatGarminForLLM, financial_summary } = context;
 
   // Build pursuit status overview
   const pursuitOverview = all_pursuits.map((pursuit: any) => {
@@ -458,7 +472,7 @@ ${memories.map((m: any) => {
 }).join('\n')}`
     : '';
 
-  // Build calendar section if calendar is connected
+// Build calendar section if calendar is connected
   const calendarSection = calendar_settings && calendar_events
     ? `\n\n## Your Calendar (Next 7 Days)
 
@@ -490,6 +504,19 @@ Use this fitness context to:
 - Celebrate fitness consistency or suggest getting moving if inactive`;
   }
 
+  // Build financial section if Plaid is connected
+  const financialSection = financial_summary
+    ? `\n\n${formatFinancesForLLM(financial_summary)}
+
+Use this financial context to:
+- Consider budget when planning activities or purchases
+- Factor in upcoming payments when scheduling
+- Understand spending patterns for lifestyle recommendations
+- Provide holistic planning considering financial health
+- Answer questions about spending, net worth, and budgets`
+    : '';
+
+
   return `You are an AI assistant helping the user manage their pursuits (goals) with full context awareness.
 
 ## All Active Pursuits - Weekly Progress
@@ -499,6 +526,7 @@ ${focusedSection}
 ${memoriesSection}
 ${calendarSection}
 ${fitnessSection}
+${financialSection}
 
 ## Your Capabilities
 
