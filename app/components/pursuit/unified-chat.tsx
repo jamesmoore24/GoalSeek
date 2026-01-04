@@ -12,6 +12,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { usePhotoPicker, MediaPhoto } from "@/hooks/use-photo-picker";
 import { InlinePhotoPicker } from "@/app/components/inline-photo-picker";
+import { MemoryPreviewModal, ExtractedMemory } from "@/app/components/pursuit/memory-preview-modal";
 
 interface Message {
   role: 'user' | 'assistant';
@@ -44,6 +45,11 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
   const [selectedImages, setSelectedImages] = useState<SelectedImage[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Memory extraction state
+  const [isMemoryModalOpen, setIsMemoryModalOpen] = useState(false);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractedMemories, setExtractedMemories] = useState<ExtractedMemory[]>([]);
 
   const {
     isNative,
@@ -203,32 +209,90 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
     }
   };
 
+  // Open modal and start extracting memories
   const handleSaveMemory = async () => {
     if (messages.length === 0 || isSavingMemory) return;
 
+    // Open modal and start extraction
+    setIsMemoryModalOpen(true);
+    setIsExtracting(true);
+    setExtractedMemories([]);
+
+    try {
+      const selectedPursuit = pursuits.find(p => p.id === selectedPursuitId);
+      const response = await fetch("/api/memories/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: messages.map(m => ({ role: m.role, content: m.content })),
+          pursuit_name: selectedPursuit?.name || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to extract memories");
+      }
+
+      const data = await response.json();
+      setExtractedMemories(data.memories || []);
+    } catch (error: any) {
+      console.error("Failed to extract memories:", error);
+      toast.error(error.message || "Failed to extract memories");
+      setIsMemoryModalOpen(false);
+    } finally {
+      setIsExtracting(false);
+    }
+  };
+
+  // Save the extracted memories to database
+  const handleSaveExtractedMemories = async (memories: ExtractedMemory[]) => {
     setIsSavingMemory(true);
     try {
       const response = await fetch("/api/memories", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: messages.map(m => ({ role: m.role, content: m.content })),
-          pursuit_id: selectedPursuitId || null,
+          memories,
+          pursuit_id: selectedPursuitId || undefined,
         }),
       });
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error || "Failed to save memory");
+        throw new Error(error.error || "Failed to save memories");
       }
 
-      toast.success("Conversation saved as memory");
+      const data = await response.json();
+      toast.success(`Saved ${data.count} memories`);
+      setIsMemoryModalOpen(false);
+      setExtractedMemories([]);
     } catch (error: any) {
-      console.error("Failed to save memory:", error);
-      toast.error(error.message || "Failed to save memory");
+      console.error("Failed to save memories:", error);
+      toast.error(error.message || "Failed to save memories");
     } finally {
       setIsSavingMemory(false);
     }
+  };
+
+  // Update a memory in the preview
+  const handleUpdateMemory = (index: number, memory: ExtractedMemory) => {
+    setExtractedMemories(prev => {
+      const updated = [...prev];
+      updated[index] = memory;
+      return updated;
+    });
+  };
+
+  // Remove a memory from the preview
+  const handleRemoveMemory = (index: number) => {
+    setExtractedMemories(prev => prev.filter((_, i) => i !== index));
+  };
+
+  // Close the memory modal
+  const handleCloseMemoryModal = () => {
+    setIsMemoryModalOpen(false);
+    setExtractedMemories([]);
   };
 
   // Handle camera/photo button click
@@ -533,6 +597,17 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
           </Button>
         </div>
       </div>
+
+      {/* Memory Preview Modal */}
+      <MemoryPreviewModal
+        isOpen={isMemoryModalOpen}
+        isLoading={isExtracting}
+        memories={extractedMemories}
+        onClose={handleCloseMemoryModal}
+        onSave={handleSaveExtractedMemories}
+        onUpdateMemory={handleUpdateMemory}
+        onRemoveMemory={handleRemoveMemory}
+      />
     </div>
   );
 }

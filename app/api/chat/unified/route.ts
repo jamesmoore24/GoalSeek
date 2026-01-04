@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getOpenRouterInstance, PLAN_MODEL } from "@/app/lib/openai";
 import { executePursuitFunction, getPursuitFunctionDefinitions } from "@/lib/pursuit/functions";
 import { createClient } from "@/lib/supabase";
+import { embedText, formatEmbeddingForPgvector } from "@/lib/embeddings";
 
 // Mock user ID (replace with actual auth when implemented)
 const MOCK_USER_ID = "00000000-0000-0000-0000-000000000000";
@@ -26,11 +27,18 @@ export async function POST(request: Request) {
       );
     }
 
-    // Build comprehensive context
+    // Get the latest user message for semantic memory search
+    const latestUserMessage = messages
+      .filter((m: any) => m.role === 'user')
+      .map((m: any) => typeof m.content === 'string' ? m.content : m.content?.find((c: any) => c.type === 'text')?.text || '')
+      .pop() || '';
+
+    // Build comprehensive context with semantic memory retrieval
     const context = await buildUnifiedChatContext(
       MOCK_USER_ID,
       selected_pursuit_id,
-      include_all_pursuits
+      include_all_pursuits,
+      latestUserMessage
     );
 
     // Format messages with unified context
@@ -186,19 +194,46 @@ export async function POST(request: Request) {
 async function buildUnifiedChatContext(
   userId: string,
   selectedPursuitId?: string,
-  includeAllPursuits: boolean = true
+  includeAllPursuits: boolean = true,
+  userMessage: string = ''
 ) {
   const supabase = createClient();
 
-  // Fetch recent memories for context
-  const memoriesRes = await supabase
-    .from("user_memories")
-    .select("*")
-    .eq("user_id", userId)
-    .order("created_at", { ascending: false })
-    .limit(10);
+  // Fetch memories using semantic search if we have a user message
+  let memories: any[] = [];
+  if (userMessage && userMessage.length > 10) {
+    try {
+      // Embed the user message for semantic search
+      const queryEmbedding = await embedText(userMessage);
 
-  const memories = memoriesRes.data || [];
+      // Use the search_memories function for semantic retrieval
+      const { data, error } = await supabase.rpc("search_memories", {
+        query_embedding: formatEmbeddingForPgvector(queryEmbedding),
+        match_user_id: userId,
+        match_threshold: 0.5, // Lower threshold to get more context
+        match_count: 10,
+      });
+
+      if (!error && data) {
+        memories = data;
+        console.log(`[RAG] Found ${memories.length} relevant memories via semantic search`);
+      }
+    } catch (error) {
+      console.error('[RAG] Semantic search failed, falling back to recent:', error);
+    }
+  }
+
+  // Fallback to recent memories if semantic search returned nothing or failed
+  if (memories.length === 0) {
+    const memoriesRes = await supabase
+      .from("user_memories")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(10);
+
+    memories = memoriesRes.data || [];
+  }
 
   // Fetch all active pursuits with their progress
   const pursuitsRes = await supabase
@@ -330,12 +365,16 @@ ${selected_pursuit_subgoals.length > 0
 `
     : '\n\nNo specific pursuit selected. You can help the user manage all pursuits or ask them to select one.';
 
-  // Build memories section
+  // Build memories section (with similarity scores if from semantic search)
   const memoriesSection = memories && memories.length > 0
-    ? `\n\n## Your Saved Memories (for context)
-These are compressed takeaways from previous conversations. Use them to maintain continuity:
+    ? `\n\n## Relevant Memories (for context)
+These memories are retrieved based on relevance to your current conversation:
 
-${memories.map((m: any) => `- [${new Date(m.created_at).toLocaleDateString()}] ${m.content}`).join('\n')}`
+${memories.map((m: any) => {
+  const similarity = m.similarity ? ` (${(m.similarity * 100).toFixed(0)}% relevant)` : '';
+  const type = m.memory_type ? `[${m.memory_type}]` : '';
+  return `- ${type}${similarity} ${m.content}`;
+}).join('\n')}`
     : '';
 
   return `You are an AI assistant helping the user manage their pursuits (goals) with full context awareness.

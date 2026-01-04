@@ -1,92 +1,164 @@
 import { NextResponse } from "next/server";
-import { getOpenRouterInstance, PLAN_MODEL } from "@/app/lib/openai";
+import { z } from "zod";
 import { createClient } from "@/lib/supabase";
+import { embedText, embedBatch, formatEmbeddingForPgvector } from "@/lib/embeddings";
+import { ExtractedMemorySchema, generateSourceId } from "@/lib/memory-extraction";
+
+export const dynamic = "force-dynamic";
 
 // Mock user ID (replace with actual auth when implemented)
 const MOCK_USER_ID = "00000000-0000-0000-0000-000000000000";
 
+// Schema for saving pre-extracted memories
+const SaveMemoriesSchema = z.object({
+  memories: z.array(ExtractedMemorySchema).min(1),
+  pursuit_id: z.string().uuid().optional(),
+});
+
+// Schema for RAG search
+const SearchMemoriesSchema = z.object({
+  query: z.string().min(1).max(1000),
+  limit: z.number().int().min(1).max(20).optional().default(10),
+  threshold: z.number().min(0).max(1).optional().default(0.7),
+  pursuit_id: z.string().uuid().optional(),
+});
+
 /**
- * POST /api/memories - Compress and save conversation as a memory
+ * POST /api/memories - Save pre-extracted memories with embeddings
+ *
  * Request body:
- *   - messages: Array<{role, content}>
- *   - pursuit_id?: string (optional - to associate memory with a pursuit)
+ *   - memories: Array of extracted memories from /api/memories/extract
+ *   - pursuit_id?: string (optional - to associate with a pursuit)
  */
 export async function POST(request: Request) {
   try {
-    const { messages, pursuit_id } = await request.json();
+    const body = await request.json();
 
-    if (!Array.isArray(messages) || messages.length === 0) {
+    // Validate request
+    const parseResult = SaveMemoriesSchema.safeParse(body);
+    if (!parseResult.success) {
       return NextResponse.json(
-        { error: "messages array is required and must not be empty" },
+        { error: "Invalid request", details: parseResult.error.flatten() },
         { status: 400 }
       );
     }
 
-    // Compress the conversation using LLM
-    const compressed = await compressConversation(messages);
+    const { memories, pursuit_id } = parseResult.data;
 
-    if (!compressed) {
-      return NextResponse.json(
-        { error: "Failed to compress conversation" },
-        { status: 500 }
-      );
-    }
+    // Generate embeddings for all memories in batch
+    const contents = memories.map(m => m.content);
+    const embeddings = await embedBatch(contents);
 
-    // Save to database
+    // Generate a source ID to link all memories from this extraction
+    const sourceId = generateSourceId();
+
+    // Prepare records for insertion
+    const records = memories.map((memory, index) => ({
+      user_id: MOCK_USER_ID,
+      content: memory.content,
+      memory_type: memory.type,
+      importance: memory.importance,
+      tags: memory.tags,
+      pursuit_id: pursuit_id || null,
+      source_id: sourceId,
+      embedding: formatEmbeddingForPgvector(embeddings[index]),
+    }));
+
+    // Insert all memories
     const supabase = createClient();
     const { data, error } = await supabase
       .from("user_memories")
-      .insert({
-        user_id: MOCK_USER_ID,
-        content: compressed,
-        pursuit_id: pursuit_id || null,
-      })
-      .select()
-      .single();
+      .insert(records)
+      .select("id, content, memory_type, importance, tags, created_at");
 
     if (error) {
-      console.error("Failed to save memory:", error);
+      console.error("Failed to save memories:", error);
       return NextResponse.json(
-        { error: "Failed to save memory to database" },
+        { error: "Failed to save memories to database", details: error.message },
         { status: 500 }
       );
     }
 
-    return NextResponse.json({ memory: data });
-  } catch (error) {
-    console.error("Memory save error:", error);
+    return NextResponse.json({
+      memories: data,
+      count: data.length,
+      source_id: sourceId,
+    });
+
+  } catch (error: any) {
+    console.error("POST /api/memories error:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Internal server error" },
+      { error: error.message || "Internal server error" },
       { status: 500 }
     );
   }
 }
 
 /**
- * GET /api/memories - Fetch recent memories for context
+ * GET /api/memories - Fetch memories (recent or by semantic search)
+ *
  * Query params:
- *   - limit?: number (default: 20)
+ *   - query?: string (if provided, does semantic search)
+ *   - limit?: number (default: 10 for search, 20 for recent)
+ *   - threshold?: number (default: 0.7, only for search)
  *   - pursuit_id?: string (filter by pursuit)
  */
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const limit = parseInt(searchParams.get("limit") || "20", 10);
+    const query = searchParams.get("query");
+    const limit = parseInt(searchParams.get("limit") || (query ? "10" : "20"), 10);
+    const threshold = parseFloat(searchParams.get("threshold") || "0.7");
     const pursuit_id = searchParams.get("pursuit_id");
 
     const supabase = createClient();
-    let query = supabase
+
+    // If query provided, do semantic search
+    if (query) {
+      // Embed the query
+      const queryEmbedding = await embedText(query);
+
+      // Use the search_memories function we created in the migration
+      const { data, error } = await supabase.rpc("search_memories", {
+        query_embedding: formatEmbeddingForPgvector(queryEmbedding),
+        match_user_id: MOCK_USER_ID,
+        match_threshold: threshold,
+        match_count: limit,
+      });
+
+      if (error) {
+        console.error("Semantic search error:", error);
+        return NextResponse.json(
+          { error: "Failed to search memories", details: error.message },
+          { status: 500 }
+        );
+      }
+
+      // Optionally filter by pursuit_id (could also add this to the SQL function)
+      const filtered = pursuit_id
+        ? (data || []).filter((m: any) => m.pursuit_id === pursuit_id)
+        : data || [];
+
+      return NextResponse.json({
+        memories: filtered,
+        search_type: "semantic",
+        query,
+      });
+    }
+
+    // Otherwise, fetch recent memories
+    let dbQuery = supabase
       .from("user_memories")
-      .select("*")
+      .select("id, content, memory_type, importance, tags, pursuit_id, created_at")
       .eq("user_id", MOCK_USER_ID)
       .order("created_at", { ascending: false })
       .limit(limit);
 
     if (pursuit_id) {
-      query = query.eq("pursuit_id", pursuit_id);
+      dbQuery = dbQuery.eq("pursuit_id", pursuit_id);
     }
 
-    const { data, error } = await query;
+    const { data, error } = await dbQuery;
 
     if (error) {
       console.error("Failed to fetch memories:", error);
@@ -96,55 +168,60 @@ export async function GET(request: Request) {
       );
     }
 
-    return NextResponse.json({ memories: data || [] });
-  } catch (error) {
-    console.error("Memory fetch error:", error);
+    return NextResponse.json({
+      memories: data || [],
+      search_type: "recent",
+    });
+
+  } catch (error: any) {
+    console.error("GET /api/memories error:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Internal server error" },
+      { error: error.message || "Internal server error" },
       { status: 500 }
     );
   }
 }
 
 /**
- * Compress a conversation into a concise takeaway using LLM
+ * DELETE /api/memories - Delete a memory
+ *
+ * Query params:
+ *   - id: string (memory ID to delete)
  */
-async function compressConversation(messages: Array<{ role: string; content: string }>): Promise<string | null> {
+export async function DELETE(request: Request) {
   try {
-    const openRouter = getOpenRouterInstance();
+    const { searchParams } = new URL(request.url);
+    const id = searchParams.get("id");
 
-    // Format conversation for compression
-    const conversationText = messages
-      .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
-      .join("\n\n");
+    if (!id) {
+      return NextResponse.json(
+        { error: "Memory ID is required" },
+        { status: 400 }
+      );
+    }
 
-    const response = await openRouter.chat.completions.create({
-      model: PLAN_MODEL,
-      messages: [
-        {
-          role: "system",
-          content: `Compress this conversation into a concise takeaway (2-4 sentences max).
-Focus on:
-- Key decisions made
-- Important insights or learnings
-- Action items or next steps
-- Any commitments or goals set
+    const supabase = createClient();
+    const { error } = await supabase
+      .from("user_memories")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", MOCK_USER_ID);
 
-Be specific and actionable. Write in first person as if the user is noting this for themselves.
-Do NOT include any preamble like "Here's the takeaway:" - just write the takeaway directly.`,
-        },
-        {
-          role: "user",
-          content: `Conversation to compress:\n\n${conversationText}`,
-        },
-      ],
-      temperature: 0.3,
-      max_tokens: 300,
-    });
+    if (error) {
+      console.error("Failed to delete memory:", error);
+      return NextResponse.json(
+        { error: "Failed to delete memory" },
+        { status: 500 }
+      );
+    }
 
-    return response.choices[0]?.message?.content || null;
-  } catch (error) {
-    console.error("Conversation compression error:", error);
-    return null;
+    return NextResponse.json({ success: true });
+
+  } catch (error: any) {
+    console.error("DELETE /api/memories error:", error);
+    return NextResponse.json(
+      { error: error.message || "Internal server error" },
+      { status: 500 }
+    );
   }
 }
