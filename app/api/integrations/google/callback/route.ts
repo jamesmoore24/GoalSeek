@@ -72,6 +72,7 @@ export async function GET(request: Request) {
     .upsert({
       user_id: user.id,
       google_calendar_connected: true,
+      calendar_sync_enabled: true, // Enable sync by default when connecting
       google_access_token: tokens.access_token,
       google_refresh_token: tokens.refresh_token,
       google_token_expires_at: expiresAt,
