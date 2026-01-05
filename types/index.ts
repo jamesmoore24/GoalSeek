@@ -78,3 +78,6 @@ export interface AgentResponse {
   actions?: string[]
   data?: any
 }
+
+// Re-export workflow types
+export * from './workflow'

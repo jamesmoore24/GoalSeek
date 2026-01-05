@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle } from "react";
 import type { Pursuit, PursuitProgress } from "@/types/pursuit";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,6 +13,10 @@ import remarkGfm from "remark-gfm";
 import { usePhotoPicker, MediaPhoto } from "@/hooks/use-photo-picker";
 import { InlinePhotoPicker } from "@/app/components/inline-photo-picker";
 import { MemoryPreviewModal, ExtractedMemory } from "@/app/components/pursuit/memory-preview-modal";
+import { CommandPicker, useCommandPicker } from "@/app/components/pursuit/command-picker";
+import { WorkflowMessage, type WorkflowState } from "@/app/components/pursuit/workflow-message";
+import { getCommand, parseTargetDate, type SlashCommand } from "@/lib/commands/registry";
+import type { AgendaProposal, WorkflowExecution } from "@/types/workflow";
 
 interface Message {
   role: 'user' | 'assistant';
@@ -22,6 +26,7 @@ interface Message {
     function: string;
     result: any;
   }>;
+  workflowState?: WorkflowState;
 }
 
 interface UnifiedChatProps {
@@ -29,6 +34,10 @@ interface UnifiedChatProps {
   pursuits: Pursuit[];
   progress: Map<string, PursuitProgress>;
   onDataChange?: () => void;
+}
+
+export interface UnifiedChatRef {
+  runWorkflow: (slug: string, options?: Record<string, unknown>) => void;
 }
 
 interface SelectedImage {
@@ -57,7 +66,10 @@ const initialPipelineStatus: PipelineStatus = {
   generating: { status: 'idle' },
 };
 
-export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChange }: UnifiedChatProps) {
+export const UnifiedChat = forwardRef<UnifiedChatRef, UnifiedChatProps>(function UnifiedChat(
+  { selectedPursuitId, pursuits, progress, onDataChange },
+  ref
+) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -66,11 +78,25 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus>(initialPipelineStatus);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Memory extraction state
   const [isMemoryModalOpen, setIsMemoryModalOpen] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractedMemories, setExtractedMemories] = useState<ExtractedMemory[]>([]);
+
+  // Command picker state
+  const {
+    showPicker: showCommandPicker,
+    commandQuery,
+    selectedIndex,
+    filteredCommands,
+    setSelectedIndex,
+    handleInputChange: handleCommandInputChange,
+    closePicker: closeCommandPicker,
+    moveSelection,
+    getSelectedCommand,
+  } = useCommandPicker();
 
   const {
     isNative,
@@ -90,11 +116,224 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
     scrollToBottom();
   }, [messages]);
 
+  // Create a stable reference to executePlanMyDayWorkflow for the ref
+  const executePlanMyDayRef = useRef<((args: string[]) => Promise<void>) | null>(null);
+
+  // Expose runWorkflow method to parent via ref
+  useImperativeHandle(ref, () => ({
+    runWorkflow: (slug: string) => {
+      if (slug === 'planmyday') {
+        // Add user message showing the workflow trigger
+        setMessages(prev => [...prev, { role: 'user', content: `Running workflow: Plan My Day` }]);
+        executePlanMyDayRef.current?.([]);
+      }
+    }
+  }), []);
+
   const selectedPursuit = pursuits.find(p => p.id === selectedPursuitId);
   const selectedProgress = selectedPursuitId ? progress.get(selectedPursuitId) : null;
 
+  // Execute slash command
+  const handleSlashCommand = useCallback(async (commandInput: string) => {
+    const parts = commandInput.slice(1).split(' ');
+    const commandName = parts[0];
+    const args = parts.slice(1);
+
+    const command = getCommand(commandName);
+    if (!command) {
+      // Unknown command
+      setMessages(prev => [
+        ...prev,
+        { role: 'user', content: commandInput },
+        { role: 'assistant', content: `Unknown command: /${commandName}. Type / to see available commands.` }
+      ]);
+      setInput("");
+      return;
+    }
+
+    // Add user message
+    setMessages(prev => [...prev, { role: 'user', content: commandInput }]);
+    setInput("");
+
+    // Handle planmyday workflow
+    if (command.workflow_slug === 'planmyday') {
+      await executePlanMyDayWorkflow(args);
+    }
+  }, []);
+
+  // Execute planmyday workflow
+  const executePlanMyDayWorkflow = useCallback(async (args: string[]) => {
+    const targetDate = parseTargetDate(args[0]);
+
+    // Add running state message
+    setMessages(prev => [...prev, {
+      role: 'assistant',
+      content: '',
+      workflowState: {
+        type: 'planmyday',
+        status: 'running',
+        step: 'Gathering your calendar events and goals...',
+      }
+    }]);
+
+    setIsLoading(true);
+
+    try {
+      const response = await fetch('/api/workflows/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workflow_slug: 'planmyday',
+          target_date: targetDate,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to execute workflow');
+      }
+
+      // Update message with proposal
+      setMessages(prev => {
+        const updated = [...prev];
+        const lastIdx = updated.length - 1;
+        if (updated[lastIdx]?.workflowState) {
+          updated[lastIdx] = {
+            role: 'assistant',
+            content: '',
+            workflowState: {
+              type: 'planmyday',
+              status: data.execution.status,
+              execution: data.execution,
+              proposal: data.proposal,
+            }
+          };
+        }
+        return updated;
+      });
+    } catch (error: any) {
+      console.error('Workflow error:', error);
+      setMessages(prev => {
+        const updated = [...prev];
+        const lastIdx = updated.length - 1;
+        if (updated[lastIdx]?.workflowState) {
+          updated[lastIdx] = {
+            role: 'assistant',
+            content: '',
+            workflowState: {
+              type: 'planmyday',
+              status: 'failed',
+              error: error.message,
+            }
+          };
+        }
+        return updated;
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  // Keep the ref updated with the latest function
+  useEffect(() => {
+    executePlanMyDayRef.current = executePlanMyDayWorkflow;
+  }, [executePlanMyDayWorkflow]);
+
+  // Handle workflow actions (approve/reject/iterate)
+  const handleWorkflowAction = useCallback(async (
+    messageIndex: number,
+    action: 'approve' | 'reject' | 'iterate',
+    feedback?: string
+  ) => {
+    const message = messages[messageIndex];
+    if (!message?.workflowState?.execution) return;
+
+    setIsLoading(true);
+
+    try {
+      if (action === 'reject') {
+        // Just update the UI state
+        setMessages(prev => {
+          const updated = [...prev];
+          if (updated[messageIndex]?.workflowState) {
+            updated[messageIndex] = {
+              ...updated[messageIndex],
+              workflowState: {
+                ...updated[messageIndex].workflowState!,
+                status: 'cancelled',
+              }
+            };
+          }
+          return updated;
+        });
+        return;
+      }
+
+      const response = await fetch(
+        `/api/workflows/executions/${message.workflowState.execution.id}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, feedback }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || `Failed to ${action}`);
+      }
+
+      // Update message with new state
+      setMessages(prev => {
+        const updated = [...prev];
+        if (updated[messageIndex]?.workflowState) {
+          updated[messageIndex] = {
+            role: 'assistant',
+            content: '',
+            workflowState: {
+              type: 'planmyday',
+              status: data.execution.status,
+              execution: data.execution,
+              proposal: data.proposal || updated[messageIndex].workflowState?.proposal,
+            }
+          };
+        }
+        return updated;
+      });
+
+      if (data.execution.status === 'completed') {
+        toast.success('Plan saved to your calendar!');
+        if (onDataChange) onDataChange();
+      }
+    } catch (error: any) {
+      console.error(`Workflow ${action} error:`, error);
+      toast.error(error.message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [messages, onDataChange]);
+
   const handleSend = async () => {
     if ((!input.trim() && selectedImages.length === 0) || isLoading) return;
+
+    // Check for active workflow proposal - treat input as revision feedback
+    const lastAssistantIdx = messages.findLastIndex(m => m.role === 'assistant');
+    const lastAssistant = messages[lastAssistantIdx];
+    if (lastAssistant?.workflowState?.status === 'awaiting_user' && input.trim()) {
+      const feedback = input.trim();
+      setMessages(prev => [...prev, { role: 'user', content: feedback }]);
+      setInput('');
+      await handleWorkflowAction(lastAssistantIdx, 'iterate', feedback);
+      return;
+    }
+
+    // Check for slash command
+    if (input.trim().startsWith('/')) {
+      closeCommandPicker();
+      return handleSlashCommand(input.trim());
+    }
 
     // Build message content - can be string or array with images
     const imageContents = selectedImages.length > 0
@@ -234,7 +473,49 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
     }
   };
 
+  // Handle command selection from picker
+  const handleCommandSelect = useCallback((command: SlashCommand) => {
+    setInput(`/${command.name} `);
+    closeCommandPicker();
+    textareaRef.current?.focus();
+  }, [closeCommandPicker]);
+
+  // Handle input change with command detection
+  const handleInputChangeWithCommand = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    setInput(value);
+    handleCommandInputChange(value);
+  }, [handleCommandInputChange]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Command picker navigation
+    if (showCommandPicker) {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        moveSelection('up');
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        moveSelection('down');
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && filteredCommands.length > 0)) {
+        e.preventDefault();
+        const selected = getSelectedCommand();
+        if (selected) {
+          handleCommandSelect(selected);
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeCommandPicker();
+        return;
+      }
+    }
+
+    // Normal send on Enter
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -412,7 +693,7 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
   };
 
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="flex flex-col h-full bg-background overflow-visible">
       {/* Context indicator */}
       {selectedPursuit && (
         <div className="px-4 py-2 border-b flex items-center justify-between bg-card">
@@ -442,7 +723,7 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
       )}
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 relative z-0">
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground py-8">
             <Bot className="h-16 w-16 mb-4 opacity-20" />
@@ -453,10 +734,10 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
               I have full context of your pursuits and can help you:
             </p>
             <ul className="text-xs space-y-1 text-left max-w-md">
+              <li>• Type <span className="font-mono bg-muted px-1 rounded">/planmyday</span> to generate an optimized agenda</li>
               <li>• Create and update subgoals with execution strategies</li>
               <li>• Rebalance time between pursuits</li>
               <li>• Track progress and suggest adjustments</li>
-              <li>• Analyze your weekly performance</li>
             </ul>
           </div>
         ) : (
@@ -476,50 +757,62 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
 
               <div
                 className={cn(
-                  "max-w-[85%] rounded-lg p-3 shadow-sm",
+                  "max-w-[85%] rounded-lg shadow-sm",
                   message.role === 'user'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-card border',
+                    ? 'bg-primary text-primary-foreground p-3'
+                    : message.workflowState ? '' : 'bg-card border p-3',
                   // Make the bubble wider when showing pipeline status
-                  message.role === 'assistant' && isLoading && idx === messages.length - 1 && !message.content && 'min-w-[220px]'
+                  message.role === 'assistant' && isLoading && idx === messages.length - 1 && !message.content && !message.workflowState && 'min-w-[220px]'
                 )}
               >
-                {/* Image carousel */}
-                {message.images && message.images.length > 0 && (
-                  <MessageImageCarousel images={message.images} />
-                )}
+                {/* Workflow message */}
+                {message.workflowState ? (
+                  <WorkflowMessage
+                    state={message.workflowState}
+                    isLoading={isLoading}
+                    onApprove={async () => handleWorkflowAction(idx, 'approve')}
+                    onReject={() => handleWorkflowAction(idx, 'reject')}
+                  />
+                ) : (
+                  <>
+                    {/* Image carousel */}
+                    {message.images && message.images.length > 0 && (
+                      <MessageImageCarousel images={message.images} />
+                    )}
 
-                {/* Show pipeline status for loading assistant messages */}
-                {message.role === 'assistant' && isLoading && idx === messages.length - 1 && (
-                  <div className={cn(message.content && "mb-3 pb-3 border-b border-border/50")}>
-                    <PipelineStatusDisplay status={pipelineStatus} />
-                  </div>
-                )}
+                    {/* Show pipeline status for loading assistant messages */}
+                    {message.role === 'assistant' && isLoading && idx === messages.length - 1 && !message.workflowState && (
+                      <div className={cn(message.content && "mb-3 pb-3 border-b border-border/50")}>
+                        <PipelineStatusDisplay status={pipelineStatus} />
+                      </div>
+                    )}
 
-                {/* Message content */}
-                {message.content && (
-                  <div className={cn(
-                      "text-sm prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2",
-                      message.role === 'user'
-                        ? "[&_*]:text-inherit"
-                        : "dark:prose-invert"
-                    )}>
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-                  </div>
-                )}
+                    {/* Message content */}
+                    {message.content && (
+                      <div className={cn(
+                          "text-sm prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2",
+                          message.role === 'user'
+                            ? "[&_*]:text-inherit"
+                            : "dark:prose-invert"
+                        )}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                      </div>
+                    )}
 
-                {message.functionCalls && message.functionCalls.length > 0 && (
-                  <div className="mt-2 pt-2 border-t border-border/50 space-y-1">
-                    <div className="flex items-center gap-1 text-xs text-muted-foreground mb-1">
-                      <Sparkles className="h-3 w-3" />
-                      <span>Actions taken:</span>
-                    </div>
-                    {message.functionCalls.map((call, i) => (
-                      <Badge key={i} variant="secondary" className="text-xs mr-1">
-                        {call.result.message || call.function}
-                      </Badge>
-                    ))}
-                  </div>
+                    {message.functionCalls && message.functionCalls.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-border/50 space-y-1">
+                        <div className="flex items-center gap-1 text-xs text-muted-foreground mb-1">
+                          <Sparkles className="h-3 w-3" />
+                          <span>Actions taken:</span>
+                        </div>
+                        {message.functionCalls.map((call, i) => (
+                          <Badge key={i} variant="secondary" className="text-xs mr-1">
+                            {call.result.message || call.function}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -532,12 +825,21 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
           ))
         )}
 
-
         <div ref={messagesEndRef} />
       </div>
 
       {/* Input */}
-      <div className="border-t bg-card">
+      <div className="border-t bg-card overflow-visible relative z-10">
+        {/* Command Picker - positioned above input container */}
+        <CommandPicker
+          query={commandQuery}
+          visible={showCommandPicker}
+          onSelect={handleCommandSelect}
+          onClose={closeCommandPicker}
+          selectedIndex={selectedIndex}
+          onSelectedIndexChange={setSelectedIndex}
+        />
+
         {/* Native Photo Picker */}
         {isNative && (
           <InlinePhotoPicker
@@ -573,6 +875,7 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
 
         {/* Input Row */}
         <div className="p-4 flex gap-2 items-end">
+
           {/* Camera/Photo Button */}
           <Button
             onClick={handleCameraClick}
@@ -601,14 +904,15 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
 
           {/* Text Input */}
           <Textarea
+            ref={textareaRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={handleInputChangeWithCommand}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={
               selectedPursuit
-                ? `Ask about ${selectedPursuit.name}...`
-                : "Ask about your pursuits..."
+                ? `Ask about ${selectedPursuit.name} or type / for commands...`
+                : "Ask about your pursuits or type / for commands..."
             }
             className="resize-none flex-1 min-h-10 py-2"
             rows={1}
@@ -640,7 +944,7 @@ export function UnifiedChat({ selectedPursuitId, pursuits, progress, onDataChang
       />
     </div>
   );
-}
+});
 
 // Helper function to convert file to base64
 async function fileToBase64(file: File): Promise<string> {

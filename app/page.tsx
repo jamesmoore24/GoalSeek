@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { Pursuit, PursuitProgress } from "@/types/pursuit";
 import { PursuitTabBar } from "@/app/components/pursuit/pursuit-tab-bar";
-import { UnifiedChat } from "@/app/components/pursuit/unified-chat";
+import { UnifiedChat, UnifiedChatRef } from "@/app/components/pursuit/unified-chat";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -24,6 +24,7 @@ export default function Home() {
   const [selectedPursuitId, setSelectedPursuitId] = useState<string | undefined>();
   const [isLoading, setIsLoading] = useState(true);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const chatRef = useRef<UnifiedChatRef>(null);
 
   // New pursuit form
   const [newPursuit, setNewPursuit] = useState({
@@ -133,10 +134,12 @@ export default function Home() {
         selectedPursuitId={selectedPursuitId}
         onSelectPursuit={setSelectedPursuitId}
         onAddPursuit={() => setShowCreateDialog(true)}
+        onRunWorkflow={(slug) => chatRef.current?.runWorkflow(slug)}
       />
 
       <div className="flex-1 overflow-hidden">
         <UnifiedChat
+          ref={chatRef}
           selectedPursuitId={selectedPursuitId}
           pursuits={pursuits}
           progress={progress}

@@ -1,9 +1,19 @@
 "use client";
 
+import { useState } from "react";
 import type { Pursuit, PursuitProgress } from "@/types/pursuit";
 import { cn } from "@/lib/utils";
-import { Plus } from "lucide-react";
+import { Plus, Zap, Sparkles, ChevronDown } from "lucide-react";
 import { UserMenu } from "@/components/user-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
 
 interface PursuitTabBarProps {
   pursuits: Pursuit[];
@@ -11,6 +21,7 @@ interface PursuitTabBarProps {
   selectedPursuitId?: string;
   onSelectPursuit: (pursuitId: string) => void;
   onAddPursuit: () => void;
+  onRunWorkflow?: (workflowSlug: string, options?: Record<string, unknown>) => void;
 }
 
 export function PursuitTabBar({
@@ -19,6 +30,7 @@ export function PursuitTabBar({
   selectedPursuitId,
   onSelectPursuit,
   onAddPursuit,
+  onRunWorkflow,
 }: PursuitTabBarProps) {
   const getTabColor = (pursuitId: string) => {
     const prog = progress.get(pursuitId);
@@ -68,6 +80,36 @@ export function PursuitTabBar({
             Add Pursuit
           </button>
         </div>
+
+        {/* Workflows Menu */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="shrink-0 h-9 w-9"
+            >
+              <Zap className="h-5 w-5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuLabel>Workflows</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={() => onRunWorkflow?.('planmyday')}
+              className="cursor-pointer"
+            >
+              <Sparkles className="h-4 w-4 mr-2" />
+              <div className="flex-1">
+                <div className="font-medium">Plan My Day</div>
+                <div className="text-xs text-muted-foreground">
+                  Generate an optimized agenda
+                </div>
+              </div>
+            </DropdownMenuItem>
+            {/* Future workflows can be added here */}
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         {/* User Menu on the right */}
         <div className="shrink-0">
